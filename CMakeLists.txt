@@ -13,6 +13,7 @@ qt_standard_project_setup()
 
 qt_add_executable(ProcessPresets WIN32
     src/main.cpp
+    src/icon.rc
     src/models.cpp
     src/settingsrepository.cpp
     src/settingsdialog.cpp
