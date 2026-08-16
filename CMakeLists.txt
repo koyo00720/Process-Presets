@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(ProcessPresets VERSION 1.0.0 LANGUAGES CXX)
+# This is the sole authoritative application version.  It drives the title,
+# QCoreApplication metadata, and the Windows executable version resource.
+project(ProcessPresets VERSION 1.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -11,9 +13,18 @@ find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets)
 
 qt_standard_project_setup()
 
+if(WIN32)
+    configure_file(
+        src/version.rc.in
+        ${CMAKE_CURRENT_BINARY_DIR}/processpresets_version.rc
+        @ONLY
+    )
+endif()
+
 qt_add_executable(ProcessPresets WIN32
     src/main.cpp
     src/icon.rc
+    ${CMAKE_CURRENT_BINARY_DIR}/processpresets_version.rc
     src/models.cpp
     src/settingsrepository.cpp
     src/settingsdialog.cpp

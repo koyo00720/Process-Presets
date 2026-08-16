@@ -33,10 +33,25 @@ struct CpuStructure {
     static CpuStructure fromJson(const QJsonObject &json);
 };
 
+enum class ProcessPriorityClass {
+    Idle,
+    BelowNormal,
+    Normal,
+    AboveNormal,
+    High,
+    Realtime,
+};
+
 struct ProcessPreset {
     QString id;
     QString executableName;
     QSet<QString> selectedCpuKeys;
+    bool enabled = true;
+    bool periodicApplyEnabled = false;
+    bool applyToAll = false;
+    int order = 1;
+    ProcessPriorityClass processPriority = ProcessPriorityClass::Normal;
+    QString groupId;
 
     QJsonObject toJson() const;
     static ProcessPreset fromJson(const QJsonObject &json);
@@ -51,6 +66,8 @@ struct CpuLeaf {
 
 QString makeId();
 QString cpuKey(int processorGroup, int logicalProcessor);
+QString processPriorityClassKey(ProcessPriorityClass priority);
+ProcessPriorityClass processPriorityClassFromKey(const QString &key);
 QVector<CpuLeaf> collectCpuLeaves(const QList<CpuNode> &roots);
 int hierarchyDepth(const QList<CpuNode> &roots);
 

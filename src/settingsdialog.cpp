@@ -63,31 +63,64 @@ SettingsDialog::SettingsDialog(const UiSettings &settings,
         text(QStringLiteral("表示"), QStringLiteral("Display")), content);
     auto *displayLayout = new QFormLayout(displayGroup);
     cpuColumnWidthSpinBox_ = new QSpinBox(displayGroup);
-    applyColumnWidthSpinBox_ = new QSpinBox(displayGroup);
+    enabledColumnWidthSpinBox_ = new QSpinBox(displayGroup);
     executableColumnWidthSpinBox_ = new QSpinBox(displayGroup);
+    applyOnceColumnWidthSpinBox_ = new QSpinBox(displayGroup);
+    periodicColumnWidthSpinBox_ = new QSpinBox(displayGroup);
+    resetColumnWidthSpinBox_ = new QSpinBox(displayGroup);
+    orderColumnWidthSpinBox_ = new QSpinBox(displayGroup);
+    processPriorityColumnWidthSpinBox_ = new QSpinBox(displayGroup);
     tableFontPointSizeSpinBox_ = new QSpinBox(displayGroup);
-    for (QSpinBox *spinBox : {applyColumnWidthSpinBox_, executableColumnWidthSpinBox_}) {
+    periodicApplyIntervalSpinBox_ = new QSpinBox(displayGroup);
+    for (QSpinBox *spinBox : {enabledColumnWidthSpinBox_, executableColumnWidthSpinBox_,
+                              applyOnceColumnWidthSpinBox_, periodicColumnWidthSpinBox_,
+                              resetColumnWidthSpinBox_, orderColumnWidthSpinBox_,
+                              processPriorityColumnWidthSpinBox_}) {
         spinBox->setRange(1, 600);
         spinBox->setSuffix(QStringLiteral(" px"));
     }
     cpuColumnWidthSpinBox_->setRange(1, 600);
     cpuColumnWidthSpinBox_->setSuffix(QStringLiteral(" px"));
     cpuColumnWidthSpinBox_->setValue(settings.cpuColumnWidth);
-    applyColumnWidthSpinBox_->setValue(settings.applyColumnWidth);
+    enabledColumnWidthSpinBox_->setValue(settings.enabledColumnWidth);
     executableColumnWidthSpinBox_->setValue(settings.executableColumnWidth);
+    applyOnceColumnWidthSpinBox_->setValue(settings.applyOnceColumnWidth);
+    periodicColumnWidthSpinBox_->setValue(settings.periodicColumnWidth);
+    resetColumnWidthSpinBox_->setValue(settings.resetColumnWidth);
+    orderColumnWidthSpinBox_->setValue(settings.orderColumnWidth);
+    processPriorityColumnWidthSpinBox_->setValue(settings.processPriorityColumnWidth);
     tableFontPointSizeSpinBox_->setRange(6, 48);
     tableFontPointSizeSpinBox_->setSuffix(QStringLiteral(" pt"));
     tableFontPointSizeSpinBox_->setValue(settings.tableFontPointSize);
+    periodicApplyIntervalSpinBox_->setRange(1, 3600);
+    periodicApplyIntervalSpinBox_->setSuffix(QStringLiteral(" s"));
+    periodicApplyIntervalSpinBox_->setValue(settings.periodicApplyIntervalSeconds);
     displayLayout->addRow(
-        text(QStringLiteral("適用列:"), QStringLiteral("Apply column:")), applyColumnWidthSpinBox_);
+        text(QStringLiteral("有効列:"), QStringLiteral("Enabled column:")), enabledColumnWidthSpinBox_);
     displayLayout->addRow(
         text(QStringLiteral(".exe列:"), QStringLiteral(".exe column:")), executableColumnWidthSpinBox_);
+    displayLayout->addRow(
+        text(QStringLiteral("適用・1回列:"), QStringLiteral("Apply / Once column:")),
+        applyOnceColumnWidthSpinBox_);
+    displayLayout->addRow(
+        text(QStringLiteral("適用・定期列:"), QStringLiteral("Apply / Periodic column:")),
+        periodicColumnWidthSpinBox_);
+    displayLayout->addRow(
+        text(QStringLiteral("リセット列:"), QStringLiteral("Reset column:")), resetColumnWidthSpinBox_);
+    displayLayout->addRow(
+        text(QStringLiteral("順番列:"), QStringLiteral("Order column:")), orderColumnWidthSpinBox_);
+    displayLayout->addRow(
+        text(QStringLiteral("優先度列:"), QStringLiteral("Process priority column:")),
+        processPriorityColumnWidthSpinBox_);
     displayLayout->addRow(
         text(QStringLiteral("CPU構造の最下層列:"), QStringLiteral("Lowest CPU hierarchy column:")),
         cpuColumnWidthSpinBox_);
     displayLayout->addRow(
         text(QStringLiteral("表の文字サイズ:"), QStringLiteral("Table font size:")),
         tableFontPointSizeSpinBox_);
+    displayLayout->addRow(
+        text(QStringLiteral("定期適用の間隔:"), QStringLiteral("Periodic apply interval:")),
+        periodicApplyIntervalSpinBox_);
     contentLayout->addWidget(displayGroup);
 
     auto *resetGroup = new QGroupBox(
@@ -103,10 +136,16 @@ SettingsDialog::SettingsDialog(const UiSettings &settings,
             == QMessageBox::Yes;
     };
     const auto resetDisplay = [this, defaults] {
-        applyColumnWidthSpinBox_->setValue(defaults.applyColumnWidth);
+        enabledColumnWidthSpinBox_->setValue(defaults.enabledColumnWidth);
         executableColumnWidthSpinBox_->setValue(defaults.executableColumnWidth);
+        applyOnceColumnWidthSpinBox_->setValue(defaults.applyOnceColumnWidth);
+        periodicColumnWidthSpinBox_->setValue(defaults.periodicColumnWidth);
+        resetColumnWidthSpinBox_->setValue(defaults.resetColumnWidth);
+        orderColumnWidthSpinBox_->setValue(defaults.orderColumnWidth);
+        processPriorityColumnWidthSpinBox_->setValue(defaults.processPriorityColumnWidth);
         cpuColumnWidthSpinBox_->setValue(defaults.cpuColumnWidth);
         tableFontPointSizeSpinBox_->setValue(defaults.tableFontPointSize);
+        periodicApplyIntervalSpinBox_->setValue(defaults.periodicApplyIntervalSeconds);
     };
     auto *resetDisplayButton = new QPushButton(
         text(QStringLiteral("列幅と文字サイズ"),
@@ -162,9 +201,15 @@ UiSettings SettingsDialog::settings() const
         ? LanguageMode::System
         : (japaneseLanguageButton_->isChecked() ? LanguageMode::Japanese : LanguageMode::English);
     result.cpuColumnWidth = cpuColumnWidthSpinBox_->value();
-    result.applyColumnWidth = applyColumnWidthSpinBox_->value();
+    result.enabledColumnWidth = enabledColumnWidthSpinBox_->value();
     result.executableColumnWidth = executableColumnWidthSpinBox_->value();
+    result.applyOnceColumnWidth = applyOnceColumnWidthSpinBox_->value();
+    result.periodicColumnWidth = periodicColumnWidthSpinBox_->value();
+    result.resetColumnWidth = resetColumnWidthSpinBox_->value();
+    result.orderColumnWidth = orderColumnWidthSpinBox_->value();
+    result.processPriorityColumnWidth = processPriorityColumnWidthSpinBox_->value();
     result.tableFontPointSize = tableFontPointSizeSpinBox_->value();
+    result.periodicApplyIntervalSeconds = periodicApplyIntervalSpinBox_->value();
     result.settingsDialogSize = size();
     return result;
 }

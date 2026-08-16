@@ -9,30 +9,282 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QCheckBox>
 #include <QColor>
 #include <QCloseEvent>
 #include <QComboBox>
+#include <QContextMenuEvent>
 #include <QFileInfo>
 #include <QFontMetrics>
 #include <QHeaderView>
+#include <QHBoxLayout>
 #include <QInputDialog>
+#include <QItemSelectionModel>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QMouseEvent>
+#include <QPainter>
+#include <QPen>
+#include <QProxyStyle>
+#include <QScrollBar>
+#include <QSet>
 #include <QStatusBar>
+#include <QStyle>
+#include <QStyledItemDelegate>
+#include <QStyleOptionViewItem>
 #include <QSignalBlocker>
 #include <QTableWidget>
+#include <QTimer>
 #include <QToolButton>
+#include <QVBoxLayout>
+#include <QWidget>
 
 #include <algorithm>
 
 namespace ProcessPresets {
 
+class PresetTableStyle final : public QProxyStyle {
+public:
+    PresetTableStyle()
+        : QProxyStyle()
+    {
+    }
+
+    void drawPrimitive(PrimitiveElement element,
+                       const QStyleOption *option,
+                       QPainter *painter,
+                       const QWidget *widget = nullptr) const override
+    {
+        if (option != nullptr
+            && (element == PE_PanelItemViewItem || element == PE_PanelItemViewRow)) {
+            QStyleOption plainOption(*option);
+            plainOption.state &= ~(State_Selected | State_MouseOver | State_HasFocus);
+            QProxyStyle::drawPrimitive(element, &plainOption, painter, widget);
+            return;
+        }
+        QProxyStyle::drawPrimitive(element, option, painter, widget);
+    }
+
+    void drawControl(ControlElement element,
+                     const QStyleOption *option,
+                     QPainter *painter,
+                     const QWidget *widget = nullptr) const override
+    {
+        if (element == CE_ItemViewItem) {
+            if (const auto *viewOption = qstyleoption_cast<const QStyleOptionViewItem *>(option)) {
+                QStyleOptionViewItem plainOption(*viewOption);
+                plainOption.state &= ~(State_Selected | State_MouseOver | State_HasFocus);
+                QProxyStyle::drawControl(element, &plainOption, painter, widget);
+                return;
+            }
+        }
+        QProxyStyle::drawControl(element, option, painter, widget);
+    }
+};
+
+class PresetItemDelegate final : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+
+    void paint(QPainter *painter,
+               const QStyleOptionViewItem &option,
+               const QModelIndex &index) const override
+    {
+        // Qt styles commonly render hover and per-cell selection with the
+        // same highlight treatment.  Selection is instead drawn once around
+        // the whole row by PresetSelectionOverlay below.
+        QStyleOptionViewItem plainOption(option);
+        plainOption.state &= ~(QStyle::State_Selected
+                               | QStyle::State_MouseOver
+                               | QStyle::State_HasFocus);
+        QStyledItemDelegate::paint(painter, plainOption, index);
+    }
+};
+
+class PresetSelectionOverlay final : public QWidget {
+public:
+    explicit PresetSelectionOverlay(QTableWidget *table)
+        : QWidget(table->viewport())
+        , table_(table)
+    {
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        setAttribute(Qt::WA_NoSystemBackground);
+        setAutoFillBackground(false);
+        refresh();
+    }
+
+    void refresh()
+    {
+        if (table_ == nullptr) {
+            return;
+        }
+        setGeometry(table_->viewport()->rect());
+        raise();
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        if (table_ == nullptr || table_->selectionModel() == nullptr) {
+            return;
+        }
+        QPainter painter(this);
+        QPen pen(table_->palette().color(QPalette::Highlight));
+        pen.setWidth(2);
+        painter.setPen(pen);
+
+        QSet<int> selectedRows;
+        for (const QModelIndex &index : table_->selectionModel()->selectedRows()) {
+            selectedRows.insert(index.row());
+        }
+        for (const int row : selectedRows) {
+            if (row < 0 || row >= table_->rowCount() || table_->columnCount() == 0) {
+                continue;
+            }
+            const auto *header = table_->horizontalHeader();
+            if (header == nullptr) {
+                continue;
+            }
+
+            // The Enabled column represents the preset state itself, so the
+            // selection outline begins at the executable column instead.
+            constexpr int firstOutlinedColumn = 1;
+            const int lastColumn = table_->columnCount() - 1;
+            if (lastColumn < firstOutlinedColumn) {
+                continue;
+            }
+            const int rowTop = table_->rowViewportPosition(row);
+            const int rowHeight = table_->rowHeight(row);
+            if (rowHeight <= 0) {
+                continue;
+            }
+
+            // sectionViewportPosition() retains the actual column position
+            // even after the first/last column has scrolled out of view.
+            // This lets us distinguish a clipped row end from an end that is
+            // genuinely visible in the viewport.
+            const int rowLeft = header->sectionViewportPosition(firstOutlinedColumn);
+            const int rowRight = header->sectionViewportPosition(lastColumn)
+                                 + header->sectionSize(lastColumn) - 1;
+            const QRect fullRowRect(QPoint(rowLeft, rowTop),
+                                    QPoint(rowRight, rowTop + rowHeight - 1));
+            const QRect viewportBounds = rect().adjusted(1, 1, -2, -2);
+            const QRect visibleRowRect = fullRowRect.intersected(viewportBounds);
+            if (visibleRowRect.isEmpty()) {
+                continue;
+            }
+
+            const int borderLeft = rowLeft + 1;
+            const int borderRight = rowRight - 2;
+            const int borderTop = rowTop + 1;
+            const int borderBottom = rowTop + rowHeight - 2;
+            const bool leftEndVisible = rowLeft >= rect().left() && rowLeft <= rect().right();
+            const bool rightEndVisible = rowRight >= rect().left() && rowRight <= rect().right();
+            const int horizontalLeft = qMax(borderLeft, viewportBounds.left());
+            const int horizontalRight = qMin(borderRight, viewportBounds.right());
+            const int verticalTop = qMax(borderTop, viewportBounds.top());
+            const int verticalBottom = qMin(borderBottom, viewportBounds.bottom());
+
+            if (horizontalLeft <= horizontalRight) {
+                if (borderTop >= viewportBounds.top() && borderTop <= viewportBounds.bottom()) {
+                    painter.drawLine(horizontalLeft, borderTop, horizontalRight, borderTop);
+                }
+                if (borderBottom >= viewportBounds.top()
+                    && borderBottom <= viewportBounds.bottom()) {
+                    painter.drawLine(horizontalLeft, borderBottom, horizontalRight, borderBottom);
+                }
+            }
+            if (verticalTop <= verticalBottom) {
+                // Draw side borders only if the actual beginning/end of the
+                // row is visible.  A horizontally clipped row therefore has
+                // no artificial vertical border at the viewport edge.
+                if (leftEndVisible
+                    && borderLeft >= viewportBounds.left() && borderLeft <= viewportBounds.right()) {
+                    painter.drawLine(borderLeft, verticalTop, borderLeft, verticalBottom);
+                }
+                if (rightEndVisible
+                    && borderRight >= viewportBounds.left() && borderRight <= viewportBounds.right()) {
+                    painter.drawLine(borderRight, verticalTop, borderRight, verticalBottom);
+                }
+            }
+        }
+    }
+
+private:
+    QTableWidget *table_ = nullptr;
+};
+
+namespace {
+
+constexpr int kEnabledColumn = 0;
+constexpr int kExecutableColumn = 1;
+constexpr int kApplyOnceColumn = 2;
+constexpr int kApplyPeriodicColumn = 3;
+constexpr int kResetColumn = 4;
+constexpr int kOrderColumn = 5;
+constexpr int kProcessPriorityColumn = 6;
+constexpr int kFirstCpuColumn = 7;
+
+QString executableKey(const QString &executableName)
+{
+    return QFileInfo(executableName.trimmed()).fileName().toCaseFolded();
+}
+
+QVector<ProcessInfo> targetProcessesForPreset(const ProcessPreset &preset,
+                                              const QString &executableName,
+                                              QString *errorMessage)
+{
+    QVector<ProcessInfo> processes = findProcessesByExecutable(executableName);
+    std::sort(processes.begin(), processes.end(), [](const ProcessInfo &left, const ProcessInfo &right) {
+        return left.processId < right.processId;
+    });
+    if (processes.isEmpty()) {
+        *errorMessage = QStringLiteral("%1 の実行中プロセスは見つかりませんでした。")
+                            .arg(executableName);
+        return {};
+    }
+    if (preset.applyToAll) {
+        return processes;
+    }
+    if (preset.order > processes.size()) {
+        *errorMessage = QStringLiteral(
+            "%1 は %2 個実行中ですが、順番 %3 の対象プロセスは存在しないため適用しませんでした。")
+                            .arg(executableName)
+                            .arg(processes.size())
+                            .arg(preset.order);
+        return {};
+    }
+    return {processes.at(preset.order - 1)};
+}
+
+QString processPriorityText(const UiSettings &settings, ProcessPriorityClass priority)
+{
+    const bool english = usesEnglish(settings);
+    switch (priority) {
+    case ProcessPriorityClass::Idle:
+        return english ? QStringLiteral("Low") : QStringLiteral("低");
+    case ProcessPriorityClass::BelowNormal:
+        return english ? QStringLiteral("Below normal") : QStringLiteral("通常以下");
+    case ProcessPriorityClass::Normal:
+        return english ? QStringLiteral("Normal") : QStringLiteral("通常");
+    case ProcessPriorityClass::AboveNormal:
+        return english ? QStringLiteral("Above normal") : QStringLiteral("通常以上");
+    case ProcessPriorityClass::High:
+        return english ? QStringLiteral("High") : QStringLiteral("高");
+    case ProcessPriorityClass::Realtime:
+        return english ? QStringLiteral("Realtime") : QStringLiteral("リアルタイム");
+    }
+    return english ? QStringLiteral("Normal") : QStringLiteral("通常");
+}
+
+} // namespace
+
 MainWindow::MainWindow()
 {
     setWindowTitle(QStringLiteral("Process Presets v%1").arg(QCoreApplication::applicationVersion()));
-    setMinimumSize(760, 360);
+    setMinimumSize(560, 280);
 
     uiSettings_ = repository_.loadUiSettings();
     resize(uiSettings_.mainWindowSize);
@@ -42,33 +294,76 @@ MainWindow::MainWindow()
 
     presetTable_ = new QTableWidget(this);
     presetTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
-    presetTable_->setSelectionMode(QAbstractItemView::SingleSelection);
+    presetTable_->setSelectionMode(QAbstractItemView::ExtendedSelection);
     presetTable_->setEditTriggers(QAbstractItemView::DoubleClicked
                                   | QAbstractItemView::SelectedClicked
                                   | QAbstractItemView::EditKeyPressed);
     presetTable_->setAlternatingRowColors(true);
     presetTable_->setShowGrid(true);
+    // ScrollPerItem snaps to column boundaries.  Per-pixel scrolling keeps
+    // the usual scrollbar behavior without forcing an impractically small
+    // one-pixel step.
+    presetTable_->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
     presetTable_->verticalHeader()->setVisible(false);
     presetTable_->verticalHeader()->setDefaultSectionSize(34);
     presetTable_->setCornerButtonEnabled(false);
+    // The platform style paints a selection accent independently of the
+    // delegate.  Suppress that per-cell treatment at the table-style level;
+    // PresetSelectionOverlay remains the sole selection indicator.
+    presetTable_->setStyle(new PresetTableStyle);
+    presetTable_->setItemDelegate(new PresetItemDelegate(presetTable_));
     presetTable_->viewport()->installEventFilter(this);
+    presetTable_->viewport()->setContextMenuPolicy(Qt::DefaultContextMenu);
 
     hierarchyHeader_ = new HierarchicalHeaderView(presetTable_);
     presetTable_->setHorizontalHeader(hierarchyHeader_);
     hierarchyHeader_->setSectionResizeMode(QHeaderView::Fixed);
     hierarchyHeader_->setStretchLastSection(false);
     hierarchyHeader_->setSectionsMovable(false);
-    setCentralWidget(presetTable_);
+    auto *centralPanel = new QWidget(this);
+    auto *centralLayout = new QVBoxLayout(centralPanel);
+    centralLayout->setContentsMargins(0, 0, 0, 0);
+    centralLayout->setSpacing(4);
+    centralLayout->addWidget(presetTable_, 1);
+
+    auto *moveLayout = new QHBoxLayout;
+    moveLayout->setContentsMargins(6, 0, 6, 4);
+    moveLayout->addStretch();
+    moveUpButton_ = new QToolButton(centralPanel);
+    moveUpButton_->setText(QStringLiteral("▲"));
+    moveDownButton_ = new QToolButton(centralPanel);
+    moveDownButton_->setText(QStringLiteral("▼"));
+    moveLayout->addWidget(moveUpButton_);
+    moveLayout->addWidget(moveDownButton_);
+    centralLayout->addLayout(moveLayout);
+    setCentralWidget(centralPanel);
     applyUiSettings();
+
+    selectionOverlay_ = new PresetSelectionOverlay(presetTable_);
 
     connect(presetTable_, &QTableWidget::itemChanged, this,
             [this](QTableWidgetItem *item) { handleTableItemChanged(item); });
+    connect(presetTable_, &QTableWidget::itemSelectionChanged, this,
+            [this] {
+                updateMoveButtons();
+                selectionOverlay_->refresh();
+            });
+    connect(presetTable_->verticalScrollBar(), &QScrollBar::valueChanged, this,
+            [this](int) { selectionOverlay_->refresh(); });
+    connect(presetTable_->horizontalScrollBar(), &QScrollBar::valueChanged, this,
+            [this](int) { selectionOverlay_->refresh(); });
+    connect(moveUpButton_, &QToolButton::clicked, this, [this] { moveSelectedPreset(-1); });
+    connect(moveDownButton_, &QToolButton::clicked, this, [this] { moveSelectedPreset(1); });
+
+    periodicApplyTimer_ = new QTimer(this);
+    connect(periodicApplyTimer_, &QTimer::timeout, this, [this] { applyPeriodicPresets(); });
 
     loadSettings();
     rebuildCpuStructureSelector();
     rebuildPresetTable();
     presetTable_->clearSelection();
     presetTable_->setCurrentItem(nullptr);
+    updateMoveButtons();
     retranslateUi();
     statusBar()->showMessage(
         text(QStringLiteral("設定ファイル: %1"), QStringLiteral("Settings file: %1"))
@@ -85,12 +380,63 @@ void MainWindow::closeEvent(QCloseEvent *event)
 
 bool MainWindow::eventFilter(QObject *watched, QEvent *event)
 {
-    if (presetTable_ != nullptr && watched == presetTable_->viewport()
-        && event->type() == QEvent::MouseButtonPress) {
-        const auto *mouseEvent = static_cast<QMouseEvent *>(event);
-        if (!presetTable_->indexAt(mouseEvent->position().toPoint()).isValid()) {
-            presetTable_->clearSelection();
-            presetTable_->setCurrentItem(nullptr);
+    if (presetTable_ != nullptr && event->type() == QEvent::ContextMenu) {
+        const auto *contextMenuEvent = static_cast<QContextMenuEvent *>(event);
+        QPoint viewportPosition;
+        if (watched == presetTable_->viewport()) {
+            viewportPosition = contextMenuEvent->pos();
+        } else if (auto *cellWidget = qobject_cast<QWidget *>(watched)) {
+            viewportPosition = presetTable_->viewport()->mapFromGlobal(
+                cellWidget->mapToGlobal(contextMenuEvent->pos()));
+        }
+
+        if (presetTable_->indexAt(viewportPosition).isValid()) {
+            showPresetContextMenu(viewportPosition);
+            return true;
+        }
+    }
+
+    if (presetTable_ != nullptr && watched == presetTable_->viewport()) {
+        if (event->type() == QEvent::MouseButtonPress) {
+            const auto *mouseEvent = static_cast<QMouseEvent *>(event);
+            if (!presetTable_->indexAt(mouseEvent->position().toPoint()).isValid()) {
+                presetTable_->clearSelection();
+                presetTable_->setCurrentItem(nullptr);
+            }
+        } else if (event->type() == QEvent::MouseButtonRelease) {
+            const auto *mouseEvent = static_cast<QMouseEvent *>(event);
+            const QModelIndex clickedIndex = presetTable_->indexAt(
+                mouseEvent->position().toPoint());
+            if (mouseEvent->button() == Qt::LeftButton
+                && clickedIndex.isValid()
+                && clickedIndex.column() == kEnabledColumn
+                && clickedIndex.row() >= 0 && clickedIndex.row() < presets_.size()) {
+                const QString groupId = presets_.at(clickedIndex.row()).groupId;
+                if (!groupId.isEmpty()) {
+                    // The enabled checkbox can rebuild the table while it is
+                    // being toggled.  Select the group after that update has
+                    // completed so every member remains selected.
+                    QTimer::singleShot(0, this, [this, groupId] {
+                        if (presetTable_ == nullptr || presetTable_->selectionModel() == nullptr) {
+                            return;
+                        }
+                        const QVector<int> groupRows = groupedRowsForId(groupId);
+                        if (groupRows.size() < 2) {
+                            return;
+                        }
+                        for (const int row : groupRows) {
+                            presetTable_->selectionModel()->select(
+                                presetTable_->model()->index(row, kExecutableColumn),
+                                QItemSelectionModel::Select | QItemSelectionModel::Rows);
+                        }
+                        presetTable_->selectionModel()->setCurrentIndex(
+                            presetTable_->model()->index(groupRows.first(), kExecutableColumn),
+                            QItemSelectionModel::NoUpdate);
+                    });
+                }
+            }
+        } else if (event->type() == QEvent::Resize && selectionOverlay_ != nullptr) {
+            selectionOverlay_->refresh();
         }
     }
     return QMainWindow::eventFilter(watched, event);
@@ -210,11 +556,35 @@ void MainWindow::retranslateUi()
     }
     if (hierarchyHeader_ != nullptr) {
         hierarchyHeader_->setFixedColumnLabels(
-            text(QStringLiteral("適用"), QStringLiteral("Apply")), QStringLiteral(".exe"));
+            text(QStringLiteral("有効"), QStringLiteral("Enabled")),
+            QStringLiteral(".exe"),
+            text(QStringLiteral("適用"), QStringLiteral("Apply")),
+            text(QStringLiteral("1回"), QStringLiteral("Once")),
+            text(QStringLiteral("定期"), QStringLiteral("Periodic")),
+            text(QStringLiteral("リセット"), QStringLiteral("Reset")),
+            text(QStringLiteral("順番"), QStringLiteral("Order")),
+            text(QStringLiteral("優先度"), QStringLiteral("Priority")));
     }
-    if (presetTable_ != nullptr && presetTable_->columnCount() >= 2) {
-        presetTable_->horizontalHeaderItem(0)->setText(text(QStringLiteral("適用"), QStringLiteral("Apply")));
-        presetTable_->horizontalHeaderItem(1)->setText(QStringLiteral(".exe"));
+    if (presetTable_ != nullptr && presetTable_->columnCount() >= kFirstCpuColumn) {
+        presetTable_->horizontalHeaderItem(kEnabledColumn)->setText(
+            text(QStringLiteral("有効"), QStringLiteral("Enabled")));
+        presetTable_->horizontalHeaderItem(kExecutableColumn)->setText(QStringLiteral(".exe"));
+        presetTable_->horizontalHeaderItem(kApplyOnceColumn)->setText(
+            text(QStringLiteral("1回"), QStringLiteral("Once")));
+        presetTable_->horizontalHeaderItem(kApplyPeriodicColumn)->setText(
+            text(QStringLiteral("定期"), QStringLiteral("Periodic")));
+        presetTable_->horizontalHeaderItem(kResetColumn)->setText(
+            text(QStringLiteral("リセット"), QStringLiteral("Reset")));
+        presetTable_->horizontalHeaderItem(kOrderColumn)->setText(
+            text(QStringLiteral("順番"), QStringLiteral("Order")));
+        presetTable_->horizontalHeaderItem(kProcessPriorityColumn)->setText(
+            text(QStringLiteral("優先度"), QStringLiteral("Priority")));
+    }
+    if (moveUpButton_ != nullptr) {
+        moveUpButton_->setToolTip(text(QStringLiteral("選択したプリセットを上へ移動"),
+                                       QStringLiteral("Move selected preset up")));
+        moveDownButton_->setToolTip(text(QStringLiteral("選択したプリセットを下へ移動"),
+                                         QStringLiteral("Move selected preset down")));
     }
 }
 
@@ -247,6 +617,7 @@ void MainWindow::loadSettings()
     }
 
     presets_ = repository_.loadProcessPresets();
+    normalizeGroups();
 }
 
 const CpuStructure &MainWindow::activeCpuStructure() const
@@ -264,37 +635,174 @@ void MainWindow::rebuildPresetTable()
     rebuildingTable_ = true;
     activeLeaves_ = collectCpuLeaves(activeCpuStructure().roots);
 
+    presetTable_->clearSpans();
     presetTable_->clearContents();
     presetTable_->setRowCount(presets_.size());
-    presetTable_->setColumnCount(2 + activeLeaves_.size());
+    presetTable_->setColumnCount(kFirstCpuColumn + activeLeaves_.size());
     presetTable_->setHorizontalHeaderItem(
-        0, new QTableWidgetItem(text(QStringLiteral("適用"), QStringLiteral("Apply"))));
-    presetTable_->setHorizontalHeaderItem(1, new QTableWidgetItem(QStringLiteral(".exe")));
+        kEnabledColumn, new QTableWidgetItem(text(QStringLiteral("有効"), QStringLiteral("Enabled"))));
+    presetTable_->setHorizontalHeaderItem(
+        kExecutableColumn, new QTableWidgetItem(QStringLiteral(".exe")));
+    presetTable_->setHorizontalHeaderItem(
+        kApplyOnceColumn, new QTableWidgetItem(text(QStringLiteral("1回"), QStringLiteral("Once"))));
+    presetTable_->setHorizontalHeaderItem(
+        kApplyPeriodicColumn,
+        new QTableWidgetItem(text(QStringLiteral("定期"), QStringLiteral("Periodic"))));
+    presetTable_->setHorizontalHeaderItem(
+        kResetColumn, new QTableWidgetItem(text(QStringLiteral("リセット"), QStringLiteral("Reset"))));
+    presetTable_->setHorizontalHeaderItem(
+        kOrderColumn, new QTableWidgetItem(text(QStringLiteral("順番"), QStringLiteral("Order"))));
+    presetTable_->setHorizontalHeaderItem(
+        kProcessPriorityColumn,
+        new QTableWidgetItem(text(QStringLiteral("優先度"), QStringLiteral("Priority"))));
     for (int column = 0; column < activeLeaves_.size(); ++column) {
         presetTable_->setHorizontalHeaderItem(
-            2 + column, new QTableWidgetItem(activeLeaves_.at(column).label));
+            kFirstCpuColumn + column, new QTableWidgetItem(activeLeaves_.at(column).label));
     }
 
     hierarchyHeader_->setHierarchy(activeCpuStructure().roots);
-    presetTable_->setColumnWidth(0, uiSettings_.applyColumnWidth);
-    presetTable_->setColumnWidth(1, uiSettings_.executableColumnWidth);
+    presetTable_->setColumnWidth(kEnabledColumn, uiSettings_.enabledColumnWidth);
+    presetTable_->setColumnWidth(kExecutableColumn, uiSettings_.executableColumnWidth);
+    presetTable_->setColumnWidth(kApplyOnceColumn, uiSettings_.applyOnceColumnWidth);
+    presetTable_->setColumnWidth(kApplyPeriodicColumn, uiSettings_.periodicColumnWidth);
+    presetTable_->setColumnWidth(kResetColumn, uiSettings_.resetColumnWidth);
+    presetTable_->setColumnWidth(kOrderColumn, uiSettings_.orderColumnWidth);
+    presetTable_->setColumnWidth(kProcessPriorityColumn, uiSettings_.processPriorityColumnWidth);
     for (int column = 0; column < activeLeaves_.size(); ++column) {
-        presetTable_->setColumnWidth(2 + column, uiSettings_.cpuColumnWidth);
+        presetTable_->setColumnWidth(kFirstCpuColumn + column, uiSettings_.cpuColumnWidth);
     }
 
+    const auto installCellContextMenu = [this](QWidget *widget) {
+        widget->setContextMenuPolicy(Qt::DefaultContextMenu);
+        widget->installEventFilter(this);
+    };
+
+    bool normalizedOrders = false;
     for (int row = 0; row < presets_.size(); ++row) {
-        const ProcessPreset &preset = presets_.at(row);
+        ProcessPreset &preset = presets_[row];
+        const QString key = executableKey(preset.executableName);
+        int matchingPresetCount = 0;
+        for (const ProcessPreset &candidate : presets_) {
+            if (executableKey(candidate.executableName) == key) {
+                ++matchingPresetCount;
+            }
+        }
+        matchingPresetCount = qMax(1, matchingPresetCount);
+        if (!preset.applyToAll && preset.order > matchingPresetCount) {
+            preset.order = 1;
+            normalizedOrders = true;
+        }
+
+        auto *enabledItem = new QTableWidgetItem;
+        enabledItem->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsUserCheckable);
+        enabledItem->setTextAlignment(Qt::AlignCenter);
+        enabledItem->setCheckState(preset.enabled ? Qt::Checked : Qt::Unchecked);
+        enabledItem->setToolTip(text(QStringLiteral("このプリセットを有効にする"),
+                                     QStringLiteral("Enable this preset")));
+        presetTable_->setItem(row, kEnabledColumn, enabledItem);
+
+        const bool orderConflict = executableHasOrderConflict(preset.executableName);
+        const bool applyAllowed = preset.enabled && !orderConflict;
         auto *applyButton = new QToolButton(presetTable_);
-        applyButton->setText(QStringLiteral("適用"));
+        applyButton->setText(text(QStringLiteral("適用"), QStringLiteral("Apply")));
         applyButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
-        applyButton->setToolTip(QStringLiteral("このプリセットを見つかったプロセスへ適用します"));
+        applyButton->setToolTip(text(QStringLiteral("このプリセットを見つかったプロセスへ適用します"),
+                                     QStringLiteral("Apply this preset to the selected process.")));
+        applyButton->setEnabled(applyAllowed);
         connect(applyButton, &QToolButton::clicked, this,
                 [this, presetId = preset.id] { applyPreset(presetId); });
-        presetTable_->setCellWidget(row, 0, applyButton);
+        presetTable_->setCellWidget(row, kApplyOnceColumn, applyButton);
+        installCellContextMenu(applyButton);
+
+        auto *periodicCheckBox = new QCheckBox(presetTable_);
+        periodicCheckBox->setChecked(preset.periodicApplyEnabled);
+        // A disabled preset must not be applied, but its periodic setting can
+        // still be prepared before the preset is enabled again.
+        periodicCheckBox->setEnabled(!orderConflict);
+        periodicCheckBox->setToolTip(text(QStringLiteral("設定した間隔で自動的に適用します"),
+                                          QStringLiteral("Apply automatically at the configured interval.")));
+        connect(periodicCheckBox, &QCheckBox::toggled, this,
+                [this, presetId = preset.id](bool checked) {
+                    const int index = presetIndexById(presetId);
+                    if (index < 0) {
+                        return;
+                    }
+                    presets_[index].periodicApplyEnabled = checked;
+                    savePresets();
+                    updatePeriodicTimer();
+                });
+        presetTable_->setCellWidget(row, kApplyPeriodicColumn, periodicCheckBox);
+        installCellContextMenu(periodicCheckBox);
+
+        auto *resetButton = new QToolButton(presetTable_);
+        resetButton->setText(text(QStringLiteral("リセット"), QStringLiteral("Reset")));
+        resetButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        resetButton->setToolTip(text(QStringLiteral("対象プロセスのCPUアフィニティを全CPUに戻します"),
+                                     QStringLiteral("Reset the target process affinity to all CPUs.")));
+        connect(resetButton, &QToolButton::clicked, this,
+                [this, presetId = preset.id] { resetPreset(presetId); });
+        presetTable_->setCellWidget(row, kResetColumn, resetButton);
+        installCellContextMenu(resetButton);
+
+        auto *orderCombo = new QComboBox(presetTable_);
+        for (int order = 1; order <= matchingPresetCount; ++order) {
+            orderCombo->addItem(QString::number(order), order);
+        }
+        orderCombo->addItem(text(QStringLiteral("全て"), QStringLiteral("All")), -1);
+        orderCombo->setCurrentIndex(orderCombo->findData(
+            preset.applyToAll ? -1 : preset.order));
+        orderCombo->setToolTip(text(QStringLiteral("PID昇順で適用対象を選択"),
+                                       QStringLiteral("Choose the target in ascending PID order.")));
+        connect(orderCombo, qOverload<int>(&QComboBox::currentIndexChanged), this,
+                [this, presetId = preset.id, orderCombo](int) {
+                    const int index = presetIndexById(presetId);
+                    if (index < 0) {
+                        return;
+                    }
+                    const int value = orderCombo->currentData().toInt();
+                    presets_[index].applyToAll = value == -1;
+                    if (value > 0) {
+                        presets_[index].order = value;
+                    }
+                    savePresets();
+                    rebuildPresetTable();
+                    presetTable_->selectRow(index);
+                    presetTable_->setCurrentCell(index, kExecutableColumn);
+                });
+        presetTable_->setCellWidget(row, kOrderColumn, orderCombo);
+        installCellContextMenu(orderCombo);
+
+        auto *processPriorityCombo = new QComboBox(presetTable_);
+        for (const ProcessPriorityClass priority : {ProcessPriorityClass::Idle,
+                                                    ProcessPriorityClass::BelowNormal,
+                                                    ProcessPriorityClass::Normal,
+                                                    ProcessPriorityClass::AboveNormal,
+                                                    ProcessPriorityClass::High,
+                                                    ProcessPriorityClass::Realtime}) {
+            processPriorityCombo->addItem(processPriorityText(uiSettings_, priority),
+                                          static_cast<int>(priority));
+        }
+        processPriorityCombo->setCurrentIndex(
+            processPriorityCombo->findData(static_cast<int>(preset.processPriority)));
+        processPriorityCombo->setToolTip(text(
+            QStringLiteral("タスクマネージャーのプロセス優先度を選択"),
+            QStringLiteral("Choose the Task Manager process priority.")));
+        connect(processPriorityCombo, qOverload<int>(&QComboBox::currentIndexChanged), this,
+                [this, presetId = preset.id, processPriorityCombo](int) {
+                    const int index = presetIndexById(presetId);
+                    if (index < 0) {
+                        return;
+                    }
+                    presets_[index].processPriority = static_cast<ProcessPriorityClass>(
+                        processPriorityCombo->currentData().toInt());
+                    savePresets();
+                });
+        presetTable_->setCellWidget(row, kProcessPriorityColumn, processPriorityCombo);
+        installCellContextMenu(processPriorityCombo);
 
         auto *exeItem = new QTableWidgetItem(preset.executableName);
         exeItem->setToolTip(QStringLiteral("対象.exe名（例: renderer.exe）"));
-        presetTable_->setItem(row, 1, exeItem);
+        presetTable_->setItem(row, kExecutableColumn, exeItem);
 
         for (int column = 0; column < activeLeaves_.size(); ++column) {
             const CpuLeaf &leaf = activeLeaves_.at(column);
@@ -309,11 +817,18 @@ void MainWindow::rebuildPresetTable()
                 QStringLiteral("Processor Group %1 / Thread No. %2")
                     .arg(leaf.processorGroup)
                     .arg(leaf.logicalProcessor));
-            presetTable_->setItem(row, 2 + column, cpuItem);
+            presetTable_->setItem(row, kFirstCpuColumn + column, cpuItem);
         }
     }
 
     rebuildingTable_ = false;
+    applyGroupSpans();
+    if (normalizedOrders) {
+        savePresets();
+    }
+    updatePeriodicTimer();
+    updateMoveButtons();
+    selectionOverlay_->refresh();
 }
 
 void MainWindow::savePresets()
@@ -354,25 +869,191 @@ void MainWindow::createPreset()
 
 void MainWindow::deleteSelectedPreset()
 {
-    const int row = presetTable_->currentRow();
-    if (row < 0 || row >= presets_.size()) {
+    const QVector<int> rows = selectedPresetRows();
+    if (rows.isEmpty()) {
         QMessageBox::information(this, QStringLiteral("プリセットを削除"),
                                  QStringLiteral("削除するプリセットの行を選択してください。"));
+        return;
+    }
+
+    deletePresetRows(rows);
+}
+
+void MainWindow::deletePresetRows(const QVector<int> &rows)
+{
+    QVector<int> validRows;
+    for (const int row : rows) {
+        if (row >= 0 && row < presets_.size() && !validRows.contains(row)) {
+            validRows.append(row);
+        }
+    }
+    std::sort(validRows.begin(), validRows.end());
+    if (validRows.isEmpty()) {
         return;
     }
 
     const auto answer = QMessageBox::question(
         this,
         QStringLiteral("プリセットを削除"),
-        QStringLiteral("「%1」を削除しますか？").arg(presets_.at(row).executableName));
+        validRows.size() == 1
+            ? QStringLiteral("「%1」を削除しますか？").arg(presets_.at(validRows.first()).executableName)
+            : QStringLiteral("選択した %1 件のプリセットを削除しますか？").arg(validRows.size()));
     if (answer != QMessageBox::Yes) {
         return;
     }
 
-    presets_.removeAt(row);
+    for (auto iterator = validRows.crbegin(); iterator != validRows.crend(); ++iterator) {
+        presets_.removeAt(*iterator);
+    }
+    normalizeGroups();
     savePresets();
     rebuildPresetTable();
     statusBar()->showMessage(QStringLiteral("プリセットを削除して保存しました。"), 4000);
+}
+
+void MainWindow::duplicatePreset(int row)
+{
+    if (row < 0 || row >= presets_.size()) {
+        return;
+    }
+    ProcessPreset copy = presets_.at(row);
+    copy.id = makeId();
+    int insertionRow = row + 1;
+    if (!copy.groupId.isEmpty()) {
+        insertionRow = groupedRowsForId(copy.groupId).last() + 1;
+    }
+    copy.groupId.clear();
+    presets_.insert(insertionRow, copy);
+    normalizeGroups();
+    savePresets();
+    rebuildPresetTable();
+    presetTable_->selectRow(insertionRow);
+    presetTable_->setCurrentCell(insertionRow, kExecutableColumn);
+    statusBar()->showMessage(text(QStringLiteral("プリセットを複製して保存しました。"),
+                                  QStringLiteral("Preset duplicated and saved.")), 4000);
+}
+
+void MainWindow::showPresetContextMenu(const QPoint &position)
+{
+    const QModelIndex clickedIndex = presetTable_->indexAt(position);
+    if (!clickedIndex.isValid()) {
+        return;
+    }
+    const int clickedRow = clickedIndex.row();
+    QVector<int> rows = selectedPresetRows();
+    if (!rows.contains(clickedRow)) {
+        presetTable_->clearSelection();
+        presetTable_->selectRow(clickedRow);
+        presetTable_->setCurrentCell(clickedRow, kExecutableColumn);
+        rows = {clickedRow};
+    }
+
+    QMenu menu(this);
+    QAction *duplicateAction = menu.addAction(text(QStringLiteral("複製"), QStringLiteral("Duplicate")));
+    QAction *deleteAction = menu.addAction(text(QStringLiteral("削除"), QStringLiteral("Delete")));
+    QAction *groupAction = nullptr;
+    QAction *ungroupAction = nullptr;
+    if (rows.size() >= 2) {
+        menu.addSeparator();
+        groupAction = menu.addAction(text(QStringLiteral("グループ化"), QStringLiteral("Group")));
+    }
+    const bool hasGroupedRow = std::any_of(rows.cbegin(), rows.cend(), [this](int row) {
+        return row >= 0 && row < presets_.size() && !presets_.at(row).groupId.isEmpty();
+    });
+    if (hasGroupedRow) {
+        if (groupAction == nullptr) {
+            menu.addSeparator();
+        }
+        ungroupAction = menu.addAction(text(QStringLiteral("グループを解除"), QStringLiteral("Ungroup")));
+    }
+
+    QAction *chosenAction = menu.exec(presetTable_->viewport()->mapToGlobal(position));
+    if (chosenAction == duplicateAction) {
+        duplicatePreset(clickedRow);
+    } else if (chosenAction == deleteAction) {
+        deletePresetRows(rows);
+    } else if (groupAction != nullptr && chosenAction == groupAction) {
+        groupSelectedPresets();
+    } else if (ungroupAction != nullptr && chosenAction == ungroupAction) {
+        ungroupSelectedPresets();
+    }
+}
+
+void MainWindow::groupSelectedPresets()
+{
+    QSet<int> rowSet;
+    for (const int row : selectedPresetRows()) {
+        rowSet.insert(row);
+        const QString groupId = presets_.at(row).groupId;
+        if (!groupId.isEmpty()) {
+            for (const int groupedRow : groupedRowsForId(groupId)) {
+                rowSet.insert(groupedRow);
+            }
+        }
+    }
+    QVector<int> rows;
+    rows.reserve(rowSet.size());
+    for (const int row : rowSet) {
+        rows.append(row);
+    }
+    std::sort(rows.begin(), rows.end());
+    if (rows.size() < 2) {
+        return;
+    }
+
+    const int insertionRow = rows.first();
+    const bool groupEnabled = presets_.at(insertionRow).enabled;
+    QVector<ProcessPreset> groupedPresets;
+    groupedPresets.reserve(rows.size());
+    for (const int row : rows) {
+        groupedPresets.append(presets_.at(row));
+    }
+    for (auto iterator = rows.crbegin(); iterator != rows.crend(); ++iterator) {
+        presets_.removeAt(*iterator);
+    }
+    const QString groupId = makeId();
+    for (int index = 0; index < groupedPresets.size(); ++index) {
+        ProcessPreset preset = groupedPresets.at(index);
+        preset.groupId = groupId;
+        preset.enabled = groupEnabled;
+        presets_.insert(insertionRow + index, preset);
+    }
+
+    normalizeGroups();
+    savePresets();
+    rebuildPresetTable();
+    presetTable_->clearSelection();
+    for (int row = insertionRow; row < insertionRow + groupedPresets.size(); ++row) {
+        presetTable_->selectionModel()->select(
+            presetTable_->model()->index(row, kExecutableColumn),
+            QItemSelectionModel::Select | QItemSelectionModel::Rows);
+    }
+    presetTable_->setCurrentCell(insertionRow, kExecutableColumn);
+    statusBar()->showMessage(text(QStringLiteral("選択したプリセットをグループ化しました。"),
+                                  QStringLiteral("Selected presets were grouped.")), 4000);
+}
+
+void MainWindow::ungroupSelectedPresets()
+{
+    QSet<QString> groupIds;
+    for (const int row : selectedPresetRows()) {
+        const QString groupId = presets_.at(row).groupId;
+        if (!groupId.isEmpty()) {
+            groupIds.insert(groupId);
+        }
+    }
+    if (groupIds.isEmpty()) {
+        return;
+    }
+    for (ProcessPreset &preset : presets_) {
+        if (groupIds.contains(preset.groupId)) {
+            preset.groupId.clear();
+        }
+    }
+    savePresets();
+    rebuildPresetTable();
+    statusBar()->showMessage(text(QStringLiteral("グループを解除しました。"),
+                                  QStringLiteral("Group was removed.")), 4000);
 }
 
 void MainWindow::editCpuStructures()
@@ -435,10 +1116,24 @@ void MainWindow::handleTableItemChanged(QTableWidgetItem *item)
     }
 
     ProcessPreset &preset = presets_[row];
-    if (column == 1) {
+    bool rebuild = false;
+    if (column == kEnabledColumn) {
+        const bool enabled = item->checkState() == Qt::Checked;
+        if (preset.groupId.isEmpty()) {
+            preset.enabled = enabled;
+        } else {
+            for (ProcessPreset &groupedPreset : presets_) {
+                if (groupedPreset.groupId == preset.groupId) {
+                    groupedPreset.enabled = enabled;
+                }
+            }
+        }
+        rebuild = true;
+    } else if (column == kExecutableColumn) {
         preset.executableName = QFileInfo(item->text().trimmed()).fileName();
-    } else if (column >= 2 && column - 2 < activeLeaves_.size()) {
-        const CpuLeaf &leaf = activeLeaves_.at(column - 2);
+        rebuild = true;
+    } else if (column >= kFirstCpuColumn && column - kFirstCpuColumn < activeLeaves_.size()) {
+        const CpuLeaf &leaf = activeLeaves_.at(column - kFirstCpuColumn);
         const QString key = cpuKey(leaf.processorGroup, leaf.logicalProcessor);
         if (item->checkState() == Qt::Checked) {
             preset.selectedCpuKeys.insert(key);
@@ -450,6 +1145,217 @@ void MainWindow::handleTableItemChanged(QTableWidgetItem *item)
     }
     savePresets();
     statusBar()->showMessage(QStringLiteral("変更を保存しました。"), 2500);
+    if (rebuild) {
+        rebuildPresetTable();
+        presetTable_->selectRow(row);
+        presetTable_->setCurrentCell(row, kExecutableColumn);
+    }
+}
+
+bool MainWindow::executableHasOrderConflict(const QString &executableName) const
+{
+    const QString key = executableKey(executableName);
+    if (key.isEmpty()) {
+        return false;
+    }
+
+    int allCount = 0;
+    QMap<int, int> orderCounts;
+    for (const ProcessPreset &preset : presets_) {
+        if (!preset.enabled || executableKey(preset.executableName) != key) {
+            continue;
+        }
+        if (preset.applyToAll) {
+            ++allCount;
+        } else {
+            ++orderCounts[preset.order];
+        }
+    }
+    if (allCount > 1 || (allCount > 0 && !orderCounts.isEmpty())) {
+        return true;
+    }
+    return std::any_of(orderCounts.cbegin(), orderCounts.cend(),
+                       [](int count) { return count > 1; });
+}
+
+bool MainWindow::isApplyAllowedFor(const ProcessPreset &preset) const
+{
+    return preset.enabled && !executableHasOrderConflict(preset.executableName);
+}
+
+QVector<int> MainWindow::selectedPresetRows() const
+{
+    QSet<int> rowSet;
+    if (presetTable_ != nullptr && presetTable_->selectionModel() != nullptr) {
+        for (const QModelIndex &index : presetTable_->selectionModel()->selectedRows()) {
+            if (index.row() >= 0 && index.row() < presets_.size()) {
+                rowSet.insert(index.row());
+            }
+        }
+    }
+    if (rowSet.isEmpty() && presetTable_ != nullptr) {
+        const int row = presetTable_->currentRow();
+        if (row >= 0 && row < presets_.size()) {
+            rowSet.insert(row);
+        }
+    }
+    QVector<int> result;
+    result.reserve(rowSet.size());
+    for (const int row : rowSet) {
+        result.append(row);
+    }
+    std::sort(result.begin(), result.end());
+    return result;
+}
+
+QVector<int> MainWindow::groupedRowsForId(const QString &groupId) const
+{
+    QVector<int> rows;
+    if (groupId.isEmpty()) {
+        return rows;
+    }
+    for (int row = 0; row < presets_.size(); ++row) {
+        if (presets_.at(row).groupId == groupId) {
+            rows.append(row);
+        }
+    }
+    return rows;
+}
+
+void MainWindow::normalizeGroups()
+{
+    QMap<QString, QVector<int>> rowsByGroup;
+    for (int row = 0; row < presets_.size(); ++row) {
+        if (!presets_.at(row).groupId.isEmpty()) {
+            rowsByGroup[presets_.at(row).groupId].append(row);
+        }
+    }
+    for (auto iterator = rowsByGroup.cbegin(); iterator != rowsByGroup.cend(); ++iterator) {
+        const QVector<int> rows = iterator.value();
+        const bool contiguous = std::adjacent_find(
+                                    rows.cbegin(), rows.cend(), [](int left, int right) {
+                                        return right != left + 1;
+                                    }) == rows.cend();
+        if (rows.size() < 2 || !contiguous) {
+            for (const int row : rows) {
+                presets_[row].groupId.clear();
+            }
+            continue;
+        }
+        const bool enabled = presets_.at(rows.first()).enabled;
+        for (const int row : rows) {
+            presets_[row].enabled = enabled;
+        }
+    }
+}
+
+void MainWindow::applyGroupSpans()
+{
+    presetTable_->clearSpans();
+    int row = 0;
+    while (row < presets_.size()) {
+        const QString groupId = presets_.at(row).groupId;
+        if (groupId.isEmpty()) {
+            ++row;
+            continue;
+        }
+        int end = row + 1;
+        while (end < presets_.size() && presets_.at(end).groupId == groupId) {
+            ++end;
+        }
+        if (end - row >= 2) {
+            presetTable_->setSpan(row, kEnabledColumn, end - row, 1);
+        }
+        row = end;
+    }
+}
+
+void MainWindow::moveSelectedPreset(int offset)
+{
+    const int row = presetTable_->currentRow();
+    if (row < 0 || row >= presets_.size()) {
+        return;
+    }
+    const QString groupId = presets_.at(row).groupId;
+    int destination = row + offset;
+    if (!groupId.isEmpty()) {
+        const QVector<int> groupedRows = groupedRowsForId(groupId);
+        const int first = groupedRows.first();
+        const int last = groupedRows.last();
+        if (offset < 0) {
+            if (first == 0) {
+                return;
+            }
+            ProcessPreset previous = presets_.takeAt(first - 1);
+            presets_.insert(last, previous);
+            destination = first - 1;
+        } else {
+            if (last >= presets_.size() - 1) {
+                return;
+            }
+            ProcessPreset next = presets_.takeAt(last + 1);
+            presets_.insert(first, next);
+            destination = last + 1;
+        }
+    } else {
+        if (destination < 0 || destination >= presets_.size()) {
+            return;
+        }
+        presets_.swapItemsAt(row, destination);
+    }
+    savePresets();
+    rebuildPresetTable();
+    presetTable_->selectRow(destination);
+    presetTable_->setCurrentCell(destination, kExecutableColumn);
+    statusBar()->showMessage(text(QStringLiteral("プリセットの並び順を保存しました。"),
+                                  QStringLiteral("Preset order saved.")), 2500);
+}
+
+void MainWindow::updateMoveButtons()
+{
+    if (moveUpButton_ == nullptr || moveDownButton_ == nullptr || presetTable_ == nullptr) {
+        return;
+    }
+    const int row = presetTable_->currentRow();
+    if (row < 0 || row >= presets_.size()) {
+        moveUpButton_->setEnabled(false);
+        moveDownButton_->setEnabled(false);
+        return;
+    }
+    const QString groupId = presets_.at(row).groupId;
+    const QVector<int> groupRows = groupedRowsForId(groupId);
+    const int first = groupRows.isEmpty() ? row : groupRows.first();
+    const int last = groupRows.isEmpty() ? row : groupRows.last();
+    moveUpButton_->setEnabled(first > 0);
+    moveDownButton_->setEnabled(last < presets_.size() - 1);
+}
+
+void MainWindow::updatePeriodicTimer()
+{
+    if (periodicApplyTimer_ == nullptr) {
+        return;
+    }
+    bool hasPeriodicPreset = false;
+    for (const ProcessPreset &preset : presets_) {
+        if (preset.periodicApplyEnabled && isApplyAllowedFor(preset)) {
+            hasPeriodicPreset = true;
+            break;
+        }
+    }
+    if (!hasPeriodicPreset) {
+        periodicApplyTimer_->stop();
+        return;
+    }
+    periodicApplyTimer_->start(uiSettings_.periodicApplyIntervalSeconds * 1000);
+}
+
+void MainWindow::applyPeriodicPresets()
+{
+    for (const ProcessPreset &preset : presets_) {
+        if (preset.periodicApplyEnabled && isApplyAllowedFor(preset)) {
+            applyPreset(preset.id, true);
+        }
+    }
 }
 
 int MainWindow::presetIndexById(const QString &id) const
@@ -473,7 +1379,54 @@ QVector<CpuLeaf> MainWindow::selectedLeavesFor(const ProcessPreset &preset) cons
     return selected;
 }
 
-void MainWindow::applyPreset(const QString &presetId)
+void MainWindow::applyPreset(const QString &presetId, bool periodic)
+{
+    const int presetIndex = presetIndexById(presetId);
+    if (presetIndex < 0) {
+        return;
+    }
+    const ProcessPreset &preset = presets_.at(presetIndex);
+    if (!isApplyAllowedFor(preset)) {
+        if (!periodic) {
+            statusBar()->showMessage(
+                text(QStringLiteral("このプリセットは無効、または同じ.exeの順番設定が競合しているため適用できません。"),
+                     QStringLiteral("This preset is disabled or has a conflicting order setting.")),
+                6000);
+        }
+        return;
+    }
+    const QString executableName = QFileInfo(preset.executableName.trimmed()).fileName();
+    if (executableName.isEmpty()) {
+        statusBar()->showMessage(text(QStringLiteral("対象.exe名を入力してください。"),
+                                      QStringLiteral("Enter a target .exe name.")), 6000);
+        return;
+    }
+
+    const QVector<CpuLeaf> selectedLeaves = selectedLeavesFor(preset);
+    if (selectedLeaves.isEmpty()) {
+        statusBar()->showMessage(
+            text(QStringLiteral("適用するCPUスレッドを少なくとも1つ選択してください。"),
+                 QStringLiteral("Select at least one CPU thread to apply.")), 6000);
+        return;
+    }
+
+    QString errorMessage;
+    const QVector<ProcessInfo> processes = targetProcessesForPreset(
+        preset, executableName, &errorMessage);
+    if (!errorMessage.isEmpty()) {
+        statusBar()->showMessage(errorMessage, 8000);
+        return;
+    }
+
+    QStringList messages;
+    for (const ProcessInfo &process : processes) {
+        messages.append(applyAffinity(process.processId, selectedLeaves).message);
+        messages.append(applyProcessPriority(process.processId, preset.processPriority).message);
+    }
+    statusBar()->showMessage(messages.join(QStringLiteral("  ")), 8000);
+}
+
+void MainWindow::resetPreset(const QString &presetId)
 {
     const int presetIndex = presetIndexById(presetId);
     if (presetIndex < 0) {
@@ -482,49 +1435,22 @@ void MainWindow::applyPreset(const QString &presetId)
     const ProcessPreset &preset = presets_.at(presetIndex);
     const QString executableName = QFileInfo(preset.executableName.trimmed()).fileName();
     if (executableName.isEmpty()) {
-        QMessageBox::warning(this, QStringLiteral("CPUアフィニティを適用"),
-                             QStringLiteral("対象.exe名を入力してください。"));
+        statusBar()->showMessage(text(QStringLiteral("対象.exe名を入力してください。"),
+                                      QStringLiteral("Enter a target .exe name.")), 6000);
         return;
     }
-
-    const QVector<CpuLeaf> selectedLeaves = selectedLeavesFor(preset);
-    if (selectedLeaves.isEmpty()) {
-        QMessageBox::warning(this, QStringLiteral("CPUアフィニティを適用"),
-                             QStringLiteral("適用するCPUスレッドを少なくとも1つ選択してください。"));
+    QString errorMessage;
+    const QVector<ProcessInfo> processes = targetProcessesForPreset(
+        preset, executableName, &errorMessage);
+    if (!errorMessage.isEmpty()) {
+        statusBar()->showMessage(errorMessage, 8000);
         return;
     }
-
-    const QVector<ProcessInfo> processes = findProcessesByExecutable(executableName);
-    if (processes.isEmpty()) {
-        QMessageBox::information(this, QStringLiteral("CPUアフィニティを適用"),
-                                 QStringLiteral("%1 の実行中プロセスは見つかりませんでした。")
-                                     .arg(executableName));
-        return;
+    QStringList messages;
+    for (const ProcessInfo &process : processes) {
+        messages.append(resetAffinity(process.processId).message);
     }
-
-    quint32 processId = processes.first().processId;
-    if (processes.size() > 1) {
-        ProcessSelectionDialog dialog(processes, uiSettings_.processSelectionDialogSize, this);
-        const int dialogResult = dialog.exec();
-        uiSettings_.processSelectionDialogSize = dialog.dialogSize();
-        repository_.saveUiSettings(uiSettings_);
-        if (dialogResult != QDialog::Accepted) {
-            return;
-        }
-        const std::optional<quint32> selected = dialog.selectedProcessId();
-        if (!selected) {
-            return;
-        }
-        processId = *selected;
-    }
-
-    const AffinityApplyResult result = applyAffinity(processId, selectedLeaves);
-    if (!result.success) {
-        QMessageBox::warning(this, QStringLiteral("CPUアフィニティを適用"), result.message);
-        return;
-    }
-    statusBar()->showMessage(result.message, 6000);
-    QMessageBox::information(this, QStringLiteral("CPUアフィニティを適用"), result.message);
+    statusBar()->showMessage(messages.join(QStringLiteral("  ")), 8000);
 }
 
 } // namespace ProcessPresets

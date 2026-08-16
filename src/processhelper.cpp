@@ -134,5 +134,86 @@ AffinityApplyResult applyAffinity(quint32 processId, const QVector<CpuLeaf> &sel
 #endif
 }
 
-} // namespace ProcessPresets
+AffinityApplyResult applyProcessPriority(quint32 processId, ProcessPriorityClass priority)
+{
+#ifndef Q_OS_WIN
+    Q_UNUSED(processId)
+    Q_UNUSED(priority)
+    return {false, QStringLiteral("プロセス優先度の設定は Windows でのみ利用できます。")};
+#else
+    DWORD priorityClass = NORMAL_PRIORITY_CLASS;
+    switch (priority) {
+    case ProcessPriorityClass::Idle:
+        priorityClass = IDLE_PRIORITY_CLASS;
+        break;
+    case ProcessPriorityClass::BelowNormal:
+        priorityClass = BELOW_NORMAL_PRIORITY_CLASS;
+        break;
+    case ProcessPriorityClass::Normal:
+        priorityClass = NORMAL_PRIORITY_CLASS;
+        break;
+    case ProcessPriorityClass::AboveNormal:
+        priorityClass = ABOVE_NORMAL_PRIORITY_CLASS;
+        break;
+    case ProcessPriorityClass::High:
+        priorityClass = HIGH_PRIORITY_CLASS;
+        break;
+    case ProcessPriorityClass::Realtime:
+        priorityClass = REALTIME_PRIORITY_CLASS;
+        break;
+    }
 
+    const HANDLE process = OpenProcess(PROCESS_SET_INFORMATION, FALSE, static_cast<DWORD>(processId));
+    if (process == nullptr) {
+        return {false, QStringLiteral("PID %1 を開けません: %2")
+                           .arg(processId)
+                           .arg(windowsErrorMessage(GetLastError()))};
+    }
+    const BOOL applied = SetPriorityClass(process, priorityClass);
+    const DWORD error = applied ? ERROR_SUCCESS : GetLastError();
+    CloseHandle(process);
+    if (!applied) {
+        return {false, QStringLiteral("PID %1 のプロセス優先度を設定できません: %2")
+                           .arg(processId)
+                           .arg(windowsErrorMessage(error))};
+    }
+    return {true, QStringLiteral("PID %1 のプロセス優先度を設定しました。").arg(processId)};
+#endif
+}
+
+AffinityApplyResult resetAffinity(quint32 processId)
+{
+#ifndef Q_OS_WIN
+    Q_UNUSED(processId)
+    return {false, QStringLiteral("CPUアフィニティのリセットは Windows でのみ利用できます。")};
+#else
+    // Windows has no separate \"default affinity\" API.  Giving the process every
+    // active logical processor in its normal processor group is the practical reset.
+    const WORD group = 0;
+    const int threadCount = static_cast<int>(GetActiveProcessorCount(group));
+    const int bitsInMask = static_cast<int>(sizeof(KAFFINITY) * CHAR_BIT);
+    if (threadCount <= 0 || threadCount > bitsInMask) {
+        return {false, QStringLiteral("このPCのCPU構成ではアフィニティをリセットできません。")};
+    }
+    const KAFFINITY mask = threadCount == bitsInMask
+        ? ~static_cast<KAFFINITY>(0)
+        : (static_cast<KAFFINITY>(1) << threadCount) - 1;
+    const HANDLE process = OpenProcess(PROCESS_SET_INFORMATION, FALSE, static_cast<DWORD>(processId));
+    if (process == nullptr) {
+        return {false, QStringLiteral("PID %1 を開けません: %2")
+                           .arg(processId)
+                           .arg(windowsErrorMessage(GetLastError()))};
+    }
+    const BOOL applied = SetProcessAffinityMask(process, static_cast<DWORD_PTR>(mask));
+    const DWORD error = applied ? ERROR_SUCCESS : GetLastError();
+    CloseHandle(process);
+    if (!applied) {
+        return {false, QStringLiteral("PID %1 のCPUアフィニティをリセットできません: %2")
+                           .arg(processId)
+                           .arg(windowsErrorMessage(error))};
+    }
+    return {true, QStringLiteral("PID %1 のCPUアフィニティをリセットしました。").arg(processId)};
+#endif
+}
+
+} // namespace ProcessPresets

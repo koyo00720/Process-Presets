@@ -20,26 +20,39 @@ void HierarchicalHeaderView::setHierarchy(const QList<CpuNode> &roots)
 {
     roots_ = roots;
     hierarchyDepth_ = hierarchyDepth(roots_);
+    headerRowCount_ = qMax(2, hierarchyDepth_);
     cells_.clear();
     int leafCursor = 0;
     appendCells(roots_, 0, &leafCursor);
-    setFixedHeight(hierarchyDepth_ * rowHeight_);
+    setFixedHeight(headerRowCount_ * rowHeight_);
     updateGeometry();
     viewport()->update();
 }
 
-void HierarchicalHeaderView::setFixedColumnLabels(const QString &applyLabel,
-                                                  const QString &executableLabel)
+void HierarchicalHeaderView::setFixedColumnLabels(const QString &enabledLabel,
+                                                  const QString &executableLabel,
+                                                  const QString &applyLabel,
+                                                  const QString &onceLabel,
+                                                  const QString &periodicLabel,
+                                                  const QString &resetLabel,
+                                                  const QString &orderLabel,
+                                                  const QString &processPriorityLabel)
 {
+    enabledLabel_ = enabledLabel;
     applyLabel_ = applyLabel;
     executableLabel_ = executableLabel;
+    onceLabel_ = onceLabel;
+    periodicLabel_ = periodicLabel;
+    resetLabel_ = resetLabel;
+    orderLabel_ = orderLabel;
+    processPriorityLabel_ = processPriorityLabel;
     viewport()->update();
 }
 
 void HierarchicalHeaderView::setRowHeight(int height)
 {
     rowHeight_ = qMax(1, height);
-    setFixedHeight(hierarchyDepth_ * rowHeight_);
+    setFixedHeight(headerRowCount_ * rowHeight_);
     updateGeometry();
     viewport()->update();
 }
@@ -47,7 +60,7 @@ void HierarchicalHeaderView::setRowHeight(int height)
 QSize HierarchicalHeaderView::sizeHint() const
 {
     QSize result = QHeaderView::sizeHint();
-    result.setHeight(hierarchyDepth_ * rowHeight_);
+    result.setHeight(headerRowCount_ * rowHeight_);
     return result;
 }
 
@@ -72,7 +85,7 @@ void HierarchicalHeaderView::appendCells(const QList<CpuNode> &nodes,
         const int leafCount = leavesIn(node);
         HeaderCell cell;
         cell.level = level;
-        cell.rowSpan = node.children.isEmpty() ? hierarchyDepth_ - level : 1;
+        cell.rowSpan = node.children.isEmpty() ? headerRowCount_ - level : 1;
         cell.firstLeaf = firstLeaf;
         cell.leafCount = leafCount;
         cell.isLeaf = node.children.isEmpty();
@@ -111,21 +124,50 @@ void HierarchicalHeaderView::paintEvent(QPaintEvent *event)
     painter.setClipRegion(event->region());
     painter.fillRect(event->rect(), palette().brush(QPalette::Button));
 
-    // The first two columns are ordinary table columns, vertically merged over
-    // all hierarchy rows.  CPU columns are represented by cells_ below.
+    // The fixed columns are vertically merged over all header rows, except
+    // Apply, which has a two-level header. CPU columns are represented by
+    // cells_ below.
     if (count() > 0) {
         drawCell(painter,
                  QRect(sectionViewportPosition(0), 0, sectionSize(0), height()),
-                 applyLabel_);
+                 enabledLabel_);
     }
     if (count() > 1) {
         drawCell(painter,
                  QRect(sectionViewportPosition(1), 0, sectionSize(1), height()),
                  executableLabel_);
     }
+    if (count() > 3) {
+        const int applyX = sectionViewportPosition(2);
+        const int applyRight = sectionViewportPosition(3) + sectionSize(3);
+        drawCell(painter, QRect(applyX, 0, applyRight - applyX, rowHeight_), applyLabel_);
+        drawCell(painter,
+                 QRect(sectionViewportPosition(2), rowHeight_, sectionSize(2),
+                       height() - rowHeight_),
+                 onceLabel_);
+        drawCell(painter,
+                 QRect(sectionViewportPosition(3), rowHeight_, sectionSize(3),
+                       height() - rowHeight_),
+                 periodicLabel_);
+    }
+    if (count() > 4) {
+        drawCell(painter,
+                 QRect(sectionViewportPosition(4), 0, sectionSize(4), height()),
+                 resetLabel_);
+    }
+    if (count() > 5) {
+        drawCell(painter,
+                 QRect(sectionViewportPosition(5), 0, sectionSize(5), height()),
+                 orderLabel_);
+    }
+    if (count() > 6) {
+        drawCell(painter,
+                 QRect(sectionViewportPosition(6), 0, sectionSize(6), height()),
+                 processPriorityLabel_);
+    }
 
     for (const HeaderCell &cell : cells_) {
-        const int firstColumn = 2 + cell.firstLeaf;
+        const int firstColumn = 7 + cell.firstLeaf;
         if (firstColumn >= count()) {
             continue;
         }

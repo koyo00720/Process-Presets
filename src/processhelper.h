@@ -19,6 +19,7 @@ struct AffinityApplyResult {
 
 QVector<ProcessInfo> findProcessesByExecutable(const QString &executableName);
 AffinityApplyResult applyAffinity(quint32 processId, const QVector<CpuLeaf> &selectedLeaves);
+AffinityApplyResult applyProcessPriority(quint32 processId, ProcessPriorityClass priority);
+AffinityApplyResult resetAffinity(quint32 processId);
 
 } // namespace ProcessPresets
-

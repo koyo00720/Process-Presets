@@ -29,9 +29,15 @@ private:
     QRadioButton *japaneseLanguageButton_ = nullptr;
     QRadioButton *englishLanguageButton_ = nullptr;
     QSpinBox *cpuColumnWidthSpinBox_ = nullptr;
-    QSpinBox *applyColumnWidthSpinBox_ = nullptr;
+    QSpinBox *enabledColumnWidthSpinBox_ = nullptr;
     QSpinBox *executableColumnWidthSpinBox_ = nullptr;
+    QSpinBox *applyOnceColumnWidthSpinBox_ = nullptr;
+    QSpinBox *periodicColumnWidthSpinBox_ = nullptr;
+    QSpinBox *resetColumnWidthSpinBox_ = nullptr;
+    QSpinBox *orderColumnWidthSpinBox_ = nullptr;
+    QSpinBox *processPriorityColumnWidthSpinBox_ = nullptr;
     QSpinBox *tableFontPointSizeSpinBox_ = nullptr;
+    QSpinBox *periodicApplyIntervalSpinBox_ = nullptr;
     bool deleteCustomCpuStructuresRequested_ = false;
     std::function<void()> deleteCustomCpuStructures_;
 };

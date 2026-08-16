@@ -13,7 +13,14 @@ public:
     explicit HierarchicalHeaderView(QWidget *parent = nullptr);
 
     void setHierarchy(const QList<CpuNode> &roots);
-    void setFixedColumnLabels(const QString &applyLabel, const QString &executableLabel);
+    void setFixedColumnLabels(const QString &enabledLabel,
+                              const QString &executableLabel,
+                              const QString &applyLabel,
+                              const QString &onceLabel,
+                              const QString &periodicLabel,
+                              const QString &resetLabel,
+                              const QString &orderLabel,
+                              const QString &processPriorityLabel);
     void setRowHeight(int height);
     QSize sizeHint() const override;
 
@@ -40,9 +47,16 @@ private:
     QList<CpuNode> roots_;
     QVector<HeaderCell> cells_;
     int hierarchyDepth_ = 1;
+    int headerRowCount_ = 2;
     int rowHeight_ = 26;
-    QString applyLabel_ = QStringLiteral("適用");
+    QString enabledLabel_ = QStringLiteral("有効");
     QString executableLabel_ = QStringLiteral(".exe");
+    QString applyLabel_ = QStringLiteral("適用");
+    QString onceLabel_ = QStringLiteral("1回");
+    QString periodicLabel_ = QStringLiteral("定期");
+    QString resetLabel_ = QStringLiteral("リセット");
+    QString orderLabel_ = QStringLiteral("順番");
+    QString processPriorityLabel_ = QStringLiteral("優先度");
 };
 
 } // namespace ProcessPresets

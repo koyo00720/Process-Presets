@@ -13,9 +13,15 @@ struct UiSettings {
     ThemeMode themeMode = ThemeMode::System;
     LanguageMode languageMode = LanguageMode::System;
     int cpuColumnWidth = 62;
-    int applyColumnWidth = 82;
+    int enabledColumnWidth = 64;
     int executableColumnWidth = 180;
+    int applyOnceColumnWidth = 82;
+    int periodicColumnWidth = 82;
+    int resetColumnWidth = 82;
+    int orderColumnWidth = 82;
+    int processPriorityColumnWidth = 110;
     int tableFontPointSize = 10;
+    int periodicApplyIntervalSeconds = 10;
     QSize mainWindowSize = QSize(1000, 600);
     QSize settingsDialogSize = QSize(440, 460);
     QSize cpuStructureDialogSize = QSize(820, 600);

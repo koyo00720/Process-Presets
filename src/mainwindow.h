@@ -13,10 +13,13 @@ class QTableWidget;
 class QTableWidgetItem;
 class QCloseEvent;
 class QEvent;
+class QTimer;
+class QToolButton;
 
 namespace ProcessPresets {
 
 class HierarchicalHeaderView;
+class PresetSelectionOverlay;
 
 class MainWindow final : public QMainWindow {
 public:
@@ -31,6 +34,11 @@ private:
     void rebuildPresetTable();
     void createPreset();
     void deleteSelectedPreset();
+    void deletePresetRows(const QVector<int> &rows);
+    void duplicatePreset(int row);
+    void showPresetContextMenu(const QPoint &position);
+    void groupSelectedPresets();
+    void ungroupSelectedPresets();
     void editCpuStructures();
     void openSettings();
     void resetCustomCpuStructures();
@@ -39,7 +47,18 @@ private:
     QString text(const QString &japanese, const QString &english) const;
     void savePresets();
     void handleTableItemChanged(QTableWidgetItem *item);
-    void applyPreset(const QString &presetId);
+    void applyPreset(const QString &presetId, bool periodic = false);
+    void resetPreset(const QString &presetId);
+    void moveSelectedPreset(int offset);
+    void updateMoveButtons();
+    void updatePeriodicTimer();
+    void applyPeriodicPresets();
+    bool isApplyAllowedFor(const ProcessPreset &preset) const;
+    bool executableHasOrderConflict(const QString &executableName) const;
+    QVector<int> selectedPresetRows() const;
+    QVector<int> groupedRowsForId(const QString &groupId) const;
+    void normalizeGroups();
+    void applyGroupSpans();
     const CpuStructure &activeCpuStructure() const;
     int presetIndexById(const QString &id) const;
     QVector<CpuLeaf> selectedLeavesFor(const ProcessPreset &preset) const;
@@ -59,6 +78,10 @@ private:
     QAction *cpuStructureAction_ = nullptr;
     QAction *settingsAction_ = nullptr;
     QComboBox *cpuStructureCombo_ = nullptr;
+    QToolButton *moveUpButton_ = nullptr;
+    QToolButton *moveDownButton_ = nullptr;
+    QTimer *periodicApplyTimer_ = nullptr;
+    PresetSelectionOverlay *selectionOverlay_ = nullptr;
     bool rebuildingTable_ = false;
 };
 

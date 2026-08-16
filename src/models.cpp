@@ -146,6 +146,12 @@ QJsonObject ProcessPreset::toJson() const
     QJsonObject result;
     result.insert(QStringLiteral("id"), id);
     result.insert(QStringLiteral("executableName"), executableName);
+    result.insert(QStringLiteral("enabled"), enabled);
+    result.insert(QStringLiteral("periodicApplyEnabled"), periodicApplyEnabled);
+    result.insert(QStringLiteral("applyToAll"), applyToAll);
+    result.insert(QStringLiteral("order"), order);
+    result.insert(QStringLiteral("processPriority"), processPriorityClassKey(processPriority));
+    result.insert(QStringLiteral("groupId"), groupId);
 
     QStringList keys = selectedCpuKeys.values();
     std::sort(keys.begin(), keys.end());
@@ -165,12 +171,63 @@ ProcessPreset ProcessPreset::fromJson(const QJsonObject &json)
         result.id = makeId();
     }
     result.executableName = json.value(QStringLiteral("executableName")).toString();
+    result.enabled = json.contains(QStringLiteral("enabled"))
+        ? json.value(QStringLiteral("enabled")).toBool()
+        : true;
+    result.periodicApplyEnabled = json.value(QStringLiteral("periodicApplyEnabled")).toBool();
+    result.applyToAll = json.value(QStringLiteral("applyToAll")).toBool();
+    // \"priority\" was the name used for the PID-order selector before
+    // v1.2.0.  Read it as a fallback so existing presets keep their behavior.
+    result.order = qMax(1, json.value(QStringLiteral("order"))
+                               .toInt(json.value(QStringLiteral("priority")).toInt(1)));
+    result.processPriority = processPriorityClassFromKey(
+        json.value(QStringLiteral("processPriority")).toString());
+    result.groupId = json.value(QStringLiteral("groupId")).toString();
     for (const QJsonValue &value : json.value(QStringLiteral("selectedCpuKeys")).toArray()) {
         if (value.isString()) {
             result.selectedCpuKeys.insert(value.toString());
         }
     }
     return result;
+}
+
+QString processPriorityClassKey(ProcessPriorityClass priority)
+{
+    switch (priority) {
+    case ProcessPriorityClass::Idle:
+        return QStringLiteral("idle");
+    case ProcessPriorityClass::BelowNormal:
+        return QStringLiteral("below-normal");
+    case ProcessPriorityClass::Normal:
+        return QStringLiteral("normal");
+    case ProcessPriorityClass::AboveNormal:
+        return QStringLiteral("above-normal");
+    case ProcessPriorityClass::High:
+        return QStringLiteral("high");
+    case ProcessPriorityClass::Realtime:
+        return QStringLiteral("realtime");
+    }
+    return QStringLiteral("normal");
+}
+
+ProcessPriorityClass processPriorityClassFromKey(const QString &key)
+{
+    if (key == QStringLiteral("idle")) {
+        return ProcessPriorityClass::Idle;
+    }
+    if (key == QStringLiteral("below-normal")) {
+        return ProcessPriorityClass::BelowNormal;
+    }
+    if (key == QStringLiteral("above-normal")) {
+        return ProcessPriorityClass::AboveNormal;
+    }
+    if (key == QStringLiteral("high")) {
+        return ProcessPriorityClass::High;
+    }
+    if (key == QStringLiteral("realtime")) {
+        return ProcessPriorityClass::Realtime;
+    }
+    return ProcessPriorityClass::Normal;
 }
 
 QVector<CpuLeaf> collectCpuLeaves(const QList<CpuNode> &roots)
