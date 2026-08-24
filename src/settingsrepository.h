@@ -24,6 +24,11 @@ public:
     QVector<ProcessPreset> loadProcessPresets() const;
     void saveProcessPresets(const QVector<ProcessPreset> &presets);
 
+    QVector<ProcessOrderAssignment> loadProcessOrderAssignments() const;
+    void saveProcessOrderAssignments(const QVector<ProcessOrderAssignment> &assignments);
+    QVector<ProcessPresetOwnership> loadProcessPresetOwnerships() const;
+    void saveProcessPresetOwnerships(const QVector<ProcessPresetOwnership> &ownerships);
+
 private:
     QString filePath_;
     QSettings settings_;

@@ -1,14 +1,18 @@
 #pragma once
 
 #include "models.h"
+#include "processhelper.h"
 #include "settingsrepository.h"
 
+#include <QElapsedTimer>
+#include <QHash>
 #include <QMainWindow>
 #include <QPalette>
 
 class QAction;
 class QComboBox;
 class QMenu;
+class QPushButton;
 class QTableWidget;
 class QTableWidgetItem;
 class QCloseEvent;
@@ -20,6 +24,7 @@ namespace ProcessPresets {
 
 class HierarchicalHeaderView;
 class PresetSelectionOverlay;
+class CpuUsageRowWidget;
 
 class MainWindow final : public QMainWindow {
 public:
@@ -46,6 +51,8 @@ private:
     void retranslateUi();
     QString text(const QString &japanese, const QString &english) const;
     void savePresets();
+    void saveProcessOrderAssignments();
+    void saveProcessPresetOwnerships();
     void handleTableItemChanged(QTableWidgetItem *item);
     void applyPreset(const QString &presetId, bool periodic = false);
     void resetPreset(const QString &presetId);
@@ -53,6 +60,26 @@ private:
     void updateMoveButtons();
     void updatePeriodicTimer();
     void applyPeriodicPresets();
+    void updatePerformanceTimer();
+    void updatePerformanceMetrics();
+    void resetAllProcessOrderAssignments();
+    void updateAssignedPidCells();
+    bool pruneProcessOrderAssignments();
+    bool pruneProcessPresetOwnerships();
+    bool reconcileProcessOrderAssignments(const QString &executableName,
+                                          const QVector<ProcessInfo> &processes,
+                                          int maximumOrder,
+                                          int orderToAssign);
+    QVector<ProcessInfo> targetProcessesForPreset(const ProcessPreset &preset,
+                                                  const QString &executableName,
+                                                  QString *errorMessage);
+    int matchingPresetCountForExecutable(const QString &executableName) const;
+    quint32 assignedProcessId(const QString &executableName, int order) const;
+    QVector<quint32> processIdsOwnedByPreset(const QString &presetId) const;
+    bool recordProcessPresetOwnership(const QString &executableName,
+                                      quint32 processId,
+                                      const QString &presetId);
+    bool clearProcessPresetOwnership(const QString &executableName, quint32 processId);
     bool isApplyAllowedFor(const ProcessPreset &preset) const;
     bool executableHasOrderConflict(const QString &executableName) const;
     QVector<int> selectedPresetRows() const;
@@ -63,12 +90,24 @@ private:
     int presetIndexById(const QString &id) const;
     QVector<CpuLeaf> selectedLeavesFor(const ProcessPreset &preset) const;
 
+    struct ProcessCpuSample {
+        quint64 processorTime100Nanoseconds = 0;
+        qint64 timestampMilliseconds = 0;
+    };
+
+    struct ProcessorCpuSample {
+        quint64 idleTime100Nanoseconds = 0;
+        quint64 totalTime100Nanoseconds = 0;
+    };
+
     SettingsRepository repository_;
     UiSettings uiSettings_;
     QPalette systemPalette_;
     QVector<CpuStructure> cpuStructures_;
     QString activeCpuStructureId_;
     QVector<ProcessPreset> presets_;
+    QVector<ProcessOrderAssignment> processOrderAssignments_;
+    QVector<ProcessPresetOwnership> processPresetOwnerships_;
     QVector<CpuLeaf> activeLeaves_;
     QTableWidget *presetTable_ = nullptr;
     HierarchicalHeaderView *hierarchyHeader_ = nullptr;
@@ -80,8 +119,15 @@ private:
     QComboBox *cpuStructureCombo_ = nullptr;
     QToolButton *moveUpButton_ = nullptr;
     QToolButton *moveDownButton_ = nullptr;
+    QPushButton *resetAllAssignmentsButton_ = nullptr;
     QTimer *periodicApplyTimer_ = nullptr;
+    QTimer *performanceTimer_ = nullptr;
     PresetSelectionOverlay *selectionOverlay_ = nullptr;
+    CpuUsageRowWidget *cpuUsageRow_ = nullptr;
+    QElapsedTimer performanceClock_;
+    QHash<quint32, ProcessCpuSample> processCpuSamples_;
+    QHash<QString, ProcessorCpuSample> processorCpuSamples_;
+    QHash<QString, double> processorUsagePercentages_;
     bool rebuildingTable_ = false;
 };
 

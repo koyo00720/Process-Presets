@@ -36,7 +36,11 @@ void HierarchicalHeaderView::setFixedColumnLabels(const QString &enabledLabel,
                                                   const QString &periodicLabel,
                                                   const QString &resetLabel,
                                                   const QString &orderLabel,
-                                                  const QString &processPriorityLabel)
+                                                  const QString &processPriorityLabel,
+                                                  const QString &pidLabel,
+                                                  const QString &processStartLabel,
+                                                  const QString &processCpuLabel,
+                                                  const QString &processMemoryLabel)
 {
     enabledLabel_ = enabledLabel;
     applyLabel_ = applyLabel;
@@ -46,6 +50,10 @@ void HierarchicalHeaderView::setFixedColumnLabels(const QString &enabledLabel,
     resetLabel_ = resetLabel;
     orderLabel_ = orderLabel;
     processPriorityLabel_ = processPriorityLabel;
+    pidLabel_ = pidLabel;
+    processStartLabel_ = processStartLabel;
+    processCpuLabel_ = processCpuLabel;
+    processMemoryLabel_ = processMemoryLabel;
     viewport()->update();
 }
 
@@ -165,9 +173,29 @@ void HierarchicalHeaderView::paintEvent(QPaintEvent *event)
                  QRect(sectionViewportPosition(6), 0, sectionSize(6), height()),
                  processPriorityLabel_);
     }
+    if (count() > 7) {
+        drawCell(painter,
+                 QRect(sectionViewportPosition(7), 0, sectionSize(7), height()),
+                 pidLabel_);
+    }
+    if (count() > 8) {
+        drawCell(painter,
+                 QRect(sectionViewportPosition(8), 0, sectionSize(8), height()),
+                 processStartLabel_);
+    }
+    if (count() > 9) {
+        drawCell(painter,
+                 QRect(sectionViewportPosition(9), 0, sectionSize(9), height()),
+                 processCpuLabel_);
+    }
+    if (count() > 10) {
+        drawCell(painter,
+                 QRect(sectionViewportPosition(10), 0, sectionSize(10), height()),
+                 processMemoryLabel_);
+    }
 
     for (const HeaderCell &cell : cells_) {
-        const int firstColumn = 7 + cell.firstLeaf;
+        const int firstColumn = 11 + cell.firstLeaf;
         if (firstColumn >= count()) {
             continue;
         }

@@ -57,6 +57,24 @@ struct ProcessPreset {
     static ProcessPreset fromJson(const QJsonObject &json);
 };
 
+struct ProcessOrderAssignment {
+    QString executableName;
+    int order = 1;
+    quint32 processId = 0;
+
+    QJsonObject toJson() const;
+    static ProcessOrderAssignment fromJson(const QJsonObject &json);
+};
+
+struct ProcessPresetOwnership {
+    QString executableName;
+    quint32 processId = 0;
+    QString presetId;
+
+    QJsonObject toJson() const;
+    static ProcessPresetOwnership fromJson(const QJsonObject &json);
+};
+
 struct CpuLeaf {
     QString label;
     int processorGroup = 0;

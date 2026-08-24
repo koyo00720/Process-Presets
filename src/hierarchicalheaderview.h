@@ -20,7 +20,11 @@ public:
                               const QString &periodicLabel,
                               const QString &resetLabel,
                               const QString &orderLabel,
-                              const QString &processPriorityLabel);
+                              const QString &processPriorityLabel,
+                              const QString &pidLabel,
+                              const QString &processStartLabel,
+                              const QString &processCpuLabel,
+                              const QString &processMemoryLabel);
     void setRowHeight(int height);
     QSize sizeHint() const override;
 
@@ -57,6 +61,10 @@ private:
     QString resetLabel_ = QStringLiteral("リセット");
     QString orderLabel_ = QStringLiteral("順番");
     QString processPriorityLabel_ = QStringLiteral("優先度");
+    QString pidLabel_ = QStringLiteral("PID");
+    QString processStartLabel_ = QStringLiteral("開始");
+    QString processCpuLabel_ = QStringLiteral("CPU");
+    QString processMemoryLabel_ = QStringLiteral("メモリ");
 };
 
 } // namespace ProcessPresets

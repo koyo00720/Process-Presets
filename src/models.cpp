@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <functional>
+#include <limits>
 
 namespace ProcessPresets {
 namespace {
@@ -188,6 +189,48 @@ ProcessPreset ProcessPreset::fromJson(const QJsonObject &json)
             result.selectedCpuKeys.insert(value.toString());
         }
     }
+    return result;
+}
+
+QJsonObject ProcessOrderAssignment::toJson() const
+{
+    QJsonObject result;
+    result.insert(QStringLiteral("executableName"), executableName);
+    result.insert(QStringLiteral("order"), order);
+    result.insert(QStringLiteral("processId"), static_cast<qint64>(processId));
+    return result;
+}
+
+ProcessOrderAssignment ProcessOrderAssignment::fromJson(const QJsonObject &json)
+{
+    ProcessOrderAssignment result;
+    result.executableName = json.value(QStringLiteral("executableName")).toString();
+    result.order = qMax(1, json.value(QStringLiteral("order")).toInt(1));
+    const double processId = json.value(QStringLiteral("processId")).toDouble();
+    if (processId > 0.0 && processId <= static_cast<double>(std::numeric_limits<quint32>::max())) {
+        result.processId = static_cast<quint32>(processId);
+    }
+    return result;
+}
+
+QJsonObject ProcessPresetOwnership::toJson() const
+{
+    QJsonObject result;
+    result.insert(QStringLiteral("executableName"), executableName);
+    result.insert(QStringLiteral("processId"), static_cast<qint64>(processId));
+    result.insert(QStringLiteral("presetId"), presetId);
+    return result;
+}
+
+ProcessPresetOwnership ProcessPresetOwnership::fromJson(const QJsonObject &json)
+{
+    ProcessPresetOwnership result;
+    result.executableName = json.value(QStringLiteral("executableName")).toString();
+    const double processId = json.value(QStringLiteral("processId")).toDouble();
+    if (processId > 0.0 && processId <= static_cast<double>(std::numeric_limits<quint32>::max())) {
+        result.processId = static_cast<quint32>(processId);
+    }
+    result.presetId = json.value(QStringLiteral("presetId")).toString();
     return result;
 }
 

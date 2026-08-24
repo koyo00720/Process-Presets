@@ -1,6 +1,7 @@
 #include "settingsrepository.h"
 
 #include <QCoreApplication>
+#include <QColor>
 #include <QDir>
 #include <QFileInfo>
 #include <QJsonArray>
@@ -122,12 +123,71 @@ UiSettings SettingsRepository::loadUiSettings() const
         600);
     result.processPriorityColumnWidth = actionColumnWidth(
         QStringLiteral("ui/processPriorityColumnWidth"));
+    result.pidColumnWidth = actionColumnWidth(QStringLiteral("ui/pidColumnWidth"));
+    result.processStartColumnWidth = qBound(
+        1,
+        settings_.value(QStringLiteral("ui/processStartColumnWidth"),
+                        result.processStartColumnWidth).toInt(),
+        600);
+    result.processCpuColumnWidth = qBound(
+        1,
+        settings_.value(QStringLiteral("ui/processCpuColumnWidth"),
+                        result.processCpuColumnWidth).toInt(),
+        600);
+    result.processMemoryColumnWidth = qBound(
+        1,
+        settings_.value(QStringLiteral("ui/processMemoryColumnWidth"),
+                        result.processMemoryColumnWidth).toInt(),
+        600);
+    result.showProcessStartColumn = settings_.value(
+        QStringLiteral("ui/showProcessStartColumn"), result.showProcessStartColumn).toBool();
+    result.showProcessCpuColumn = settings_.value(
+        QStringLiteral("ui/showProcessCpuColumn"), result.showProcessCpuColumn).toBool();
+    result.showProcessMemoryColumn = settings_.value(
+        QStringLiteral("ui/showProcessMemoryColumn"), result.showProcessMemoryColumn).toBool();
+    result.showCpuUsageRow = settings_.value(
+        QStringLiteral("ui/showCpuUsageRow"), result.showCpuUsageRow).toBool();
     result.executableColumnWidth = qBound(
         1,
         settings_.value(QStringLiteral("ui/executableColumnWidth"), result.executableColumnWidth).toInt(),
         600);
     result.tableFontPointSize = qBound(
         6, settings_.value(QStringLiteral("ui/tableFontPointSize"), result.tableFontPointSize).toInt(), 48);
+    result.tableRowHeight = qBound(
+        1, settings_.value(QStringLiteral("ui/tableRowHeight"), result.tableRowHeight).toInt(), 600);
+    result.cpuUsageRowHeight = qBound(
+        20,
+        settings_.value(QStringLiteral("ui/cpuUsageRowHeight"), result.cpuUsageRowHeight).toInt(),
+        300);
+    result.cpuUsageBarWidth = qBound(
+        1,
+        settings_.value(QStringLiteral("ui/cpuUsageBarWidth"), result.cpuUsageBarWidth).toInt(),
+        600);
+    const QColor cpuUsageBarColor(settings_.value(
+        QStringLiteral("ui/cpuUsageBarColor"), result.cpuUsageBarColor).toString());
+    result.cpuUsageBarColor = cpuUsageBarColor.isValid()
+        ? cpuUsageBarColor.name(QColor::HexRgb)
+        : QString();
+    result.cpuUsageBarTransparencyPercent = qBound(
+        0,
+        settings_.value(QStringLiteral("ui/cpuUsageBarTransparencyPercent"),
+                        result.cpuUsageBarTransparencyPercent).toInt(),
+        100);
+    result.separatorLineThickness = qBound(
+        1,
+        settings_.value(QStringLiteral("ui/separatorLineThickness"),
+                        result.separatorLineThickness).toInt(),
+        20);
+    result.separatorLineTransparencyPercent = qBound(
+        0,
+        settings_.value(QStringLiteral("ui/separatorLineTransparencyPercent"),
+                        result.separatorLineTransparencyPercent).toInt(),
+        100);
+    result.performanceUpdateIntervalSeconds = qBound(
+        1,
+        settings_.value(QStringLiteral("ui/performanceUpdateIntervalSeconds"),
+                        result.performanceUpdateIntervalSeconds).toInt(),
+        3600);
     result.periodicApplyIntervalSeconds = qBound(
         1,
         settings_.value(QStringLiteral("ui/periodicApplyIntervalSeconds"),
@@ -166,7 +226,33 @@ void SettingsRepository::saveUiSettings(const UiSettings &settings)
     settings_.setValue(QStringLiteral("ui/orderColumnWidth"), settings.orderColumnWidth);
     settings_.setValue(QStringLiteral("ui/processPriorityColumnWidth"),
                        settings.processPriorityColumnWidth);
+    settings_.setValue(QStringLiteral("ui/pidColumnWidth"), settings.pidColumnWidth);
+    settings_.setValue(QStringLiteral("ui/processStartColumnWidth"),
+                       settings.processStartColumnWidth);
+    settings_.setValue(QStringLiteral("ui/processCpuColumnWidth"),
+                       settings.processCpuColumnWidth);
+    settings_.setValue(QStringLiteral("ui/processMemoryColumnWidth"),
+                       settings.processMemoryColumnWidth);
+    settings_.setValue(QStringLiteral("ui/showProcessStartColumn"),
+                       settings.showProcessStartColumn);
+    settings_.setValue(QStringLiteral("ui/showProcessCpuColumn"),
+                       settings.showProcessCpuColumn);
+    settings_.setValue(QStringLiteral("ui/showProcessMemoryColumn"),
+                       settings.showProcessMemoryColumn);
+    settings_.setValue(QStringLiteral("ui/showCpuUsageRow"), settings.showCpuUsageRow);
     settings_.setValue(QStringLiteral("ui/tableFontPointSize"), settings.tableFontPointSize);
+    settings_.setValue(QStringLiteral("ui/tableRowHeight"), settings.tableRowHeight);
+    settings_.setValue(QStringLiteral("ui/cpuUsageRowHeight"), settings.cpuUsageRowHeight);
+    settings_.setValue(QStringLiteral("ui/cpuUsageBarWidth"), settings.cpuUsageBarWidth);
+    settings_.setValue(QStringLiteral("ui/cpuUsageBarColor"), settings.cpuUsageBarColor);
+    settings_.setValue(QStringLiteral("ui/cpuUsageBarTransparencyPercent"),
+                       settings.cpuUsageBarTransparencyPercent);
+    settings_.setValue(QStringLiteral("ui/separatorLineThickness"),
+                       settings.separatorLineThickness);
+    settings_.setValue(QStringLiteral("ui/separatorLineTransparencyPercent"),
+                       settings.separatorLineTransparencyPercent);
+    settings_.setValue(QStringLiteral("ui/performanceUpdateIntervalSeconds"),
+                       settings.performanceUpdateIntervalSeconds);
     settings_.setValue(QStringLiteral("ui/periodicApplyIntervalSeconds"),
                        settings.periodicApplyIntervalSeconds);
     settings_.setValue(QStringLiteral("ui/mainWindowSize"), settings.mainWindowSize);
@@ -232,6 +318,73 @@ void SettingsRepository::saveProcessPresets(const QVector<ProcessPreset> &preset
         serialized.append(preset.toJson());
     }
     settings_.setValue(QStringLiteral("processPresets"), compactJson(serialized));
+    settings_.sync();
+}
+
+QVector<ProcessOrderAssignment> SettingsRepository::loadProcessOrderAssignments() const
+{
+    const QJsonDocument document = documentFromSetting(
+        settings_.value(QStringLiteral("processOrderAssignments")));
+    if (!document.isArray()) {
+        return {};
+    }
+
+    QVector<ProcessOrderAssignment> assignments;
+    for (const QJsonValue &value : document.array()) {
+        if (!value.isObject()) {
+            continue;
+        }
+        const ProcessOrderAssignment assignment = ProcessOrderAssignment::fromJson(
+            value.toObject());
+        if (!assignment.executableName.trimmed().isEmpty() && assignment.processId != 0) {
+            assignments.append(assignment);
+        }
+    }
+    return assignments;
+}
+
+void SettingsRepository::saveProcessOrderAssignments(
+    const QVector<ProcessOrderAssignment> &assignments)
+{
+    QJsonArray serialized;
+    for (const ProcessOrderAssignment &assignment : assignments) {
+        serialized.append(assignment.toJson());
+    }
+    settings_.setValue(QStringLiteral("processOrderAssignments"), compactJson(serialized));
+    settings_.sync();
+}
+
+QVector<ProcessPresetOwnership> SettingsRepository::loadProcessPresetOwnerships() const
+{
+    const QJsonDocument document = documentFromSetting(
+        settings_.value(QStringLiteral("processPresetOwnerships")));
+    if (!document.isArray()) {
+        return {};
+    }
+
+    QVector<ProcessPresetOwnership> ownerships;
+    for (const QJsonValue &value : document.array()) {
+        if (!value.isObject()) {
+            continue;
+        }
+        const ProcessPresetOwnership ownership = ProcessPresetOwnership::fromJson(
+            value.toObject());
+        if (!ownership.executableName.trimmed().isEmpty()
+            && ownership.processId != 0 && !ownership.presetId.isEmpty()) {
+            ownerships.append(ownership);
+        }
+    }
+    return ownerships;
+}
+
+void SettingsRepository::saveProcessPresetOwnerships(
+    const QVector<ProcessPresetOwnership> &ownerships)
+{
+    QJsonArray serialized;
+    for (const ProcessPresetOwnership &ownership : ownerships) {
+        serialized.append(ownership.toJson());
+    }
+    settings_.setValue(QStringLiteral("processPresetOwnerships"), compactJson(serialized));
     settings_.sync();
 }
 

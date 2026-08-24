@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.21)
 
 # This is the sole authoritative application version.  It drives the title,
 # QCoreApplication metadata, and the Windows executable version resource.
-project(ProcessPresets VERSION 1.2.0 LANGUAGES CXX)
+project(ProcessPresets VERSION 1.3.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -47,7 +47,7 @@ target_compile_definitions(ProcessPresets PRIVATE PROCESS_PRESETS_VERSION="${PRO
 
 if(WIN32)
     target_compile_definitions(ProcessPresets PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
-    target_link_libraries(ProcessPresets PRIVATE kernel32)
+    target_link_libraries(ProcessPresets PRIVATE kernel32 psapi)
 endif()
 
 if(MSVC)

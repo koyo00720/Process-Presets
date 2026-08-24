@@ -5,6 +5,7 @@
 
 #ifdef Q_OS_WIN
 #  include <windows.h>
+#  include <psapi.h>
 #  include <tlhelp32.h>
 #endif
 
@@ -12,6 +13,26 @@ namespace ProcessPresets {
 namespace {
 
 #ifdef Q_OS_WIN
+quint64 fileTimeValue(const FILETIME &fileTime)
+{
+    ULARGE_INTEGER value {};
+    value.LowPart = fileTime.dwLowDateTime;
+    value.HighPart = fileTime.dwHighDateTime;
+    return value.QuadPart;
+}
+
+QDateTime dateTimeFromFileTime(const FILETIME &fileTime)
+{
+    constexpr quint64 windowsToUnixEpoch100Nanoseconds = 116444736000000000ULL;
+    const quint64 value = fileTimeValue(fileTime);
+    if (value < windowsToUnixEpoch100Nanoseconds) {
+        return {};
+    }
+    const qint64 milliseconds = static_cast<qint64>(
+        (value - windowsToUnixEpoch100Nanoseconds) / 10000ULL);
+    return QDateTime::fromMSecsSinceEpoch(milliseconds);
+}
+
 QString windowsErrorMessage(DWORD error)
 {
     LPWSTR buffer = nullptr;
@@ -66,6 +87,122 @@ QVector<ProcessInfo> findProcessesByExecutable(const QString &executableName)
     Q_UNUSED(executableName)
 #endif
     return result;
+}
+
+ProcessPerformanceSnapshot queryProcessPerformance(quint32 processId)
+{
+    ProcessPerformanceSnapshot result;
+#ifdef Q_OS_WIN
+    HANDLE process = OpenProcess(
+        PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ,
+        FALSE,
+        static_cast<DWORD>(processId));
+    if (process == nullptr) {
+        process = OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(processId));
+    }
+    if (process == nullptr) {
+        return result;
+    }
+
+    FILETIME creationTime {};
+    FILETIME exitTime {};
+    FILETIME kernelTime {};
+    FILETIME userTime {};
+    if (GetProcessTimes(process, &creationTime, &exitTime, &kernelTime, &userTime)) {
+        result.timingAvailable = true;
+        result.startTime = dateTimeFromFileTime(creationTime);
+        result.processorTime100Nanoseconds = fileTimeValue(kernelTime) + fileTimeValue(userTime);
+    }
+
+    PROCESS_MEMORY_COUNTERS_EX memoryCounters {};
+    memoryCounters.cb = sizeof(memoryCounters);
+    if (GetProcessMemoryInfo(
+            process,
+            reinterpret_cast<PROCESS_MEMORY_COUNTERS *>(&memoryCounters),
+            sizeof(memoryCounters))) {
+        result.memoryAvailable = true;
+        result.workingSetBytes = static_cast<quint64>(memoryCounters.WorkingSetSize);
+    }
+    CloseHandle(process);
+#else
+    Q_UNUSED(processId)
+#endif
+    return result;
+}
+
+QVector<ProcessorPerformanceSnapshot> queryProcessorPerformance()
+{
+    QVector<ProcessorPerformanceSnapshot> result;
+#ifdef Q_OS_WIN
+    struct NativeProcessorPerformanceInformation {
+        LARGE_INTEGER idleTime;
+        LARGE_INTEGER kernelTime;
+        LARGE_INTEGER userTime;
+        LARGE_INTEGER dpcTime;
+        LARGE_INTEGER interruptTime;
+        ULONG interruptCount;
+    };
+
+    using NtQuerySystemInformationFunction = LONG (WINAPI *)(ULONG, PVOID, ULONG, PULONG);
+    constexpr ULONG systemProcessorPerformanceInformation = 8;
+    const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    const auto querySystemInformation = ntdll == nullptr
+        ? nullptr
+        : reinterpret_cast<NtQuerySystemInformationFunction>(
+              GetProcAddress(ntdll, "NtQuerySystemInformation"));
+    const DWORD processorCount = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+    if (querySystemInformation == nullptr || processorCount == 0) {
+        return result;
+    }
+
+    QVector<NativeProcessorPerformanceInformation> nativeSnapshots(
+        static_cast<int>(processorCount));
+    ULONG returnedBytes = 0;
+    const LONG status = querySystemInformation(
+        systemProcessorPerformanceInformation,
+        nativeSnapshots.data(),
+        static_cast<ULONG>(nativeSnapshots.size()
+                           * sizeof(NativeProcessorPerformanceInformation)),
+        &returnedBytes);
+    if (status < 0) {
+        return result;
+    }
+
+    const int returnedCount = returnedBytes == 0
+        ? nativeSnapshots.size()
+        : qMin(nativeSnapshots.size(),
+               static_cast<int>(returnedBytes
+                                / sizeof(NativeProcessorPerformanceInformation)));
+    int flatProcessorIndex = 0;
+    const WORD groupCount = GetActiveProcessorGroupCount();
+    for (WORD group = 0; group < groupCount && flatProcessorIndex < returnedCount; ++group) {
+        const DWORD groupProcessorCount = GetActiveProcessorCount(group);
+        for (DWORD logicalProcessor = 0;
+             logicalProcessor < groupProcessorCount && flatProcessorIndex < returnedCount;
+             ++logicalProcessor, ++flatProcessorIndex) {
+            const NativeProcessorPerformanceInformation &native =
+                nativeSnapshots.at(flatProcessorIndex);
+            ProcessorPerformanceSnapshot snapshot;
+            snapshot.processorGroup = static_cast<int>(group);
+            snapshot.logicalProcessor = static_cast<int>(logicalProcessor);
+            snapshot.idleTime100Nanoseconds = static_cast<quint64>(native.idleTime.QuadPart);
+            snapshot.totalTime100Nanoseconds = static_cast<quint64>(
+                native.kernelTime.QuadPart + native.userTime.QuadPart);
+            result.append(snapshot);
+        }
+    }
+#endif
+    return result;
+}
+
+int activeLogicalProcessorCount()
+{
+#ifdef Q_OS_WIN
+    return qMax(1, static_cast<int>(GetActiveProcessorCount(ALL_PROCESSOR_GROUPS)));
+#else
+    return 1;
+#endif
 }
 
 AffinityApplyResult applyAffinity(quint32 processId, const QVector<CpuLeaf> &selectedLeaves)

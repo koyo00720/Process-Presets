@@ -27,6 +27,7 @@
 #include <QPainter>
 #include <QPen>
 #include <QProxyStyle>
+#include <QPushButton>
 #include <QScrollBar>
 #include <QSet>
 #include <QStatusBar>
@@ -124,6 +125,19 @@ public:
         update();
     }
 
+    void setSeparatorRows(const QSet<int> &rows)
+    {
+        separatorRows_ = rows;
+        refresh();
+    }
+
+    void setSeparatorStyle(int thickness, int transparencyPercent)
+    {
+        separatorLineThickness_ = qBound(1, thickness, 20);
+        separatorLineTransparencyPercent_ = qBound(0, transparencyPercent, 100);
+        refresh();
+    }
+
 protected:
     void paintEvent(QPaintEvent *) override
     {
@@ -131,6 +145,42 @@ protected:
             return;
         }
         QPainter painter(this);
+
+        if (!separatorRows_.isEmpty() && table_->columnCount() > 0) {
+            const auto *header = table_->horizontalHeader();
+            if (header != nullptr) {
+                QColor separatorColor = table_->palette().color(QPalette::Text);
+                separatorColor.setAlphaF(
+                    static_cast<float>(100 - separatorLineTransparencyPercent_) / 100.0F);
+
+                const int firstColumn = 0;
+                const int lastColumn = table_->columnCount() - 1;
+                const int tableLeft = header->sectionViewportPosition(firstColumn);
+                const int tableRight = header->sectionViewportPosition(lastColumn)
+                    + header->sectionSize(lastColumn) - 1;
+                const int lineLeft = qMax(rect().left(), tableLeft);
+                const int lineRight = qMin(rect().right(), tableRight);
+
+                if (lineLeft <= lineRight) {
+                    for (const int row : separatorRows_) {
+                        if (row < 0 || row >= table_->rowCount() - 1) {
+                            continue;
+                        }
+                        const int nextRowTop = table_->rowViewportPosition(row + 1);
+                        const QRect separatorRect(
+                            lineLeft,
+                            nextRowTop - separatorLineThickness_,
+                            lineRight - lineLeft + 1,
+                            separatorLineThickness_);
+                        const QRect visibleSeparator = separatorRect.intersected(rect());
+                        if (!visibleSeparator.isEmpty()) {
+                            painter.fillRect(visibleSeparator, separatorColor);
+                        }
+                    }
+                }
+            }
+        }
+
         QPen pen(table_->palette().color(QPalette::Highlight));
         pen.setWidth(2);
         painter.setPen(pen);
@@ -214,6 +264,152 @@ protected:
 
 private:
     QTableWidget *table_ = nullptr;
+    QSet<int> separatorRows_;
+    int separatorLineThickness_ = 1;
+    int separatorLineTransparencyPercent_ = 50;
+};
+
+class CpuUsageRowWidget final : public QWidget {
+public:
+    CpuUsageRowWidget(QTableWidget *table, int firstCpuColumn, QWidget *parent)
+        : QWidget(parent)
+        , table_(table)
+        , firstCpuColumn_(firstCpuColumn)
+    {
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    }
+
+    void setCpuLeaves(const QVector<CpuLeaf> &leaves)
+    {
+        leaves_ = leaves;
+        update();
+    }
+
+    void setUsagePercentages(const QHash<QString, double> &usagePercentages)
+    {
+        usagePercentages_ = usagePercentages;
+        update();
+    }
+
+    void setLabel(const QString &label)
+    {
+        label_ = label;
+        update();
+    }
+
+    void setBarWidth(int width)
+    {
+        barWidth_ = qMax(1, width);
+        update();
+    }
+
+    void setBarAppearance(const QString &colorName, int transparencyPercent)
+    {
+        barColor_ = QColor(colorName);
+        barTransparencyPercent_ = qBound(0, transparencyPercent, 100);
+        update();
+    }
+
+    void refresh()
+    {
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter painter(this);
+        painter.fillRect(rect(), palette().brush(QPalette::Window));
+        if (table_ == nullptr || table_->horizontalHeader() == nullptr
+            || table_->columnCount() <= firstCpuColumn_) {
+            return;
+        }
+
+        const auto *header = table_->horizontalHeader();
+        const QRect tableViewportGeometry = table_->viewport()->geometry();
+        const int contentLeft = tableViewportGeometry.left();
+        const QRect contentRect(
+            contentLeft, 0, tableViewportGeometry.width(), height());
+        if (contentRect.isEmpty()) {
+            return;
+        }
+        painter.setClipRect(contentRect);
+        painter.fillRect(contentRect, palette().brush(QPalette::Base));
+
+        const int labelLeft = contentLeft + header->sectionViewportPosition(0);
+        const int firstCpuLeft = contentLeft
+            + header->sectionViewportPosition(firstCpuColumn_);
+        const QRect labelRect(labelLeft, 0, firstCpuLeft - labelLeft, height());
+        const QRect visibleLabelRect = labelRect.intersected(contentRect);
+        if (!visibleLabelRect.isEmpty()) {
+            painter.fillRect(visibleLabelRect, palette().brush(QPalette::Base));
+            painter.setPen(palette().color(QPalette::Mid));
+            painter.drawRect(labelRect.adjusted(0, 0, -1, -1));
+            painter.setPen(palette().color(QPalette::Text));
+            painter.drawText(visibleLabelRect.adjusted(4, 1, -4, -1),
+                             Qt::AlignCenter,
+                             label_);
+        }
+
+        for (int leafIndex = 0; leafIndex < leaves_.size(); ++leafIndex) {
+            const int column = firstCpuColumn_ + leafIndex;
+            if (column >= table_->columnCount() || table_->isColumnHidden(column)) {
+                continue;
+            }
+            const QRect cellRect(
+                contentLeft + header->sectionViewportPosition(column),
+                0,
+                header->sectionSize(column),
+                height());
+            if (!cellRect.intersects(contentRect)) {
+                continue;
+            }
+
+            painter.fillRect(cellRect.intersected(contentRect),
+                             palette().brush(QPalette::Base));
+            painter.setPen(palette().color(QPalette::Mid));
+            painter.drawRect(cellRect.adjusted(0, 0, -1, -1));
+
+            const QString key = cpuKey(leaves_.at(leafIndex).processorGroup,
+                                       leaves_.at(leafIndex).logicalProcessor);
+            const double usage = usagePercentages_.value(key, -1.0);
+            if (usage < 0.0) {
+                painter.setPen(palette().color(QPalette::Text));
+                painter.drawText(cellRect, Qt::AlignCenter, QStringLiteral("—"));
+                continue;
+            }
+
+            const QRect graphRect = cellRect.adjusted(3, 3, -3, -3);
+            if (!graphRect.isEmpty()) {
+                int barHeight = qRound(graphRect.height() * qBound(0.0, usage, 100.0) / 100.0);
+                if (usage > 0.0) {
+                    barHeight = qMax(1, barHeight);
+                }
+                const int barWidth = qBound(1, barWidth_, graphRect.width());
+                const QRect barRect(
+                    graphRect.center().x() - barWidth / 2,
+                    graphRect.bottom() - barHeight + 1,
+                    barWidth,
+                    barHeight);
+                QColor fillColor = barColor_.isValid()
+                    ? barColor_
+                    : palette().color(QPalette::Text);
+                fillColor.setAlpha(qRound(
+                    255.0 * (100 - barTransparencyPercent_) / 100.0));
+                painter.fillRect(barRect, fillColor);
+            }
+        }
+    }
+
+private:
+    QTableWidget *table_ = nullptr;
+    int firstCpuColumn_ = 0;
+    QVector<CpuLeaf> leaves_;
+    QHash<QString, double> usagePercentages_;
+    QString label_ = QStringLiteral("CPU使用率");
+    int barWidth_ = 28;
+    QColor barColor_;
+    int barTransparencyPercent_ = 0;
 };
 
 namespace {
@@ -225,38 +421,35 @@ constexpr int kApplyPeriodicColumn = 3;
 constexpr int kResetColumn = 4;
 constexpr int kOrderColumn = 5;
 constexpr int kProcessPriorityColumn = 6;
-constexpr int kFirstCpuColumn = 7;
+constexpr int kPidColumn = 7;
+constexpr int kProcessStartColumn = 8;
+constexpr int kProcessCpuColumn = 9;
+constexpr int kProcessMemoryColumn = 10;
+constexpr int kFirstCpuColumn = 11;
 
 QString executableKey(const QString &executableName)
 {
     return QFileInfo(executableName.trimmed()).fileName().toCaseFolded();
 }
 
-QVector<ProcessInfo> targetProcessesForPreset(const ProcessPreset &preset,
-                                              const QString &executableName,
-                                              QString *errorMessage)
+QString processStartTimeText(const QDateTime &startTime, const UiSettings &settings)
 {
-    QVector<ProcessInfo> processes = findProcessesByExecutable(executableName);
-    std::sort(processes.begin(), processes.end(), [](const ProcessInfo &left, const ProcessInfo &right) {
-        return left.processId < right.processId;
-    });
-    if (processes.isEmpty()) {
-        *errorMessage = QStringLiteral("%1 の実行中プロセスは見つかりませんでした。")
-                            .arg(executableName);
-        return {};
+    if (!startTime.isValid()) {
+        return QStringLiteral("—");
     }
-    if (preset.applyToAll) {
-        return processes;
+    return startTime.toString(usesEnglish(settings)
+                                  ? QStringLiteral("yyyy-MM-dd HH:mm:ss")
+                                  : QStringLiteral("yyyy/MM/dd HH:mm:ss"));
+}
+
+QString memoryUsageText(quint64 bytes)
+{
+    constexpr double bytesPerMegabyte = 1024.0 * 1024.0;
+    constexpr double bytesPerGigabyte = 1024.0 * bytesPerMegabyte;
+    if (bytes >= static_cast<quint64>(bytesPerGigabyte)) {
+        return QStringLiteral("%1 GB").arg(bytes / bytesPerGigabyte, 0, 'f', 2);
     }
-    if (preset.order > processes.size()) {
-        *errorMessage = QStringLiteral(
-            "%1 は %2 個実行中ですが、順番 %3 の対象プロセスは存在しないため適用しませんでした。")
-                            .arg(executableName)
-                            .arg(processes.size())
-                            .arg(preset.order);
-        return {};
-    }
-    return {processes.at(preset.order - 1)};
+    return QStringLiteral("%1 MB").arg(bytes / bytesPerMegabyte, 0, 'f', 1);
 }
 
 QString processPriorityText(const UiSettings &settings, ProcessPriorityClass priority)
@@ -305,7 +498,9 @@ MainWindow::MainWindow()
     // one-pixel step.
     presetTable_->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
     presetTable_->verticalHeader()->setVisible(false);
-    presetTable_->verticalHeader()->setDefaultSectionSize(34);
+    presetTable_->verticalHeader()->setMinimumSectionSize(1);
+    presetTable_->verticalHeader()->setSectionResizeMode(QHeaderView::Fixed);
+    presetTable_->verticalHeader()->setDefaultSectionSize(uiSettings_.tableRowHeight);
     presetTable_->setCornerButtonEnabled(false);
     // The platform style paints a selection accent independently of the
     // delegate.  Suppress that per-cell treatment at the table-style level;
@@ -326,8 +521,13 @@ MainWindow::MainWindow()
     centralLayout->setSpacing(4);
     centralLayout->addWidget(presetTable_, 1);
 
+    cpuUsageRow_ = new CpuUsageRowWidget(presetTable_, kFirstCpuColumn, centralPanel);
+    centralLayout->addWidget(cpuUsageRow_);
+
     auto *moveLayout = new QHBoxLayout;
     moveLayout->setContentsMargins(6, 0, 6, 4);
+    resetAllAssignmentsButton_ = new QPushButton(centralPanel);
+    moveLayout->addWidget(resetAllAssignmentsButton_);
     moveLayout->addStretch();
     moveUpButton_ = new QToolButton(centralPanel);
     moveUpButton_->setText(QStringLiteral("▲"));
@@ -340,6 +540,8 @@ MainWindow::MainWindow()
     applyUiSettings();
 
     selectionOverlay_ = new PresetSelectionOverlay(presetTable_);
+    selectionOverlay_->setSeparatorStyle(uiSettings_.separatorLineThickness,
+                                         uiSettings_.separatorLineTransparencyPercent);
 
     connect(presetTable_, &QTableWidget::itemChanged, this,
             [this](QTableWidgetItem *item) { handleTableItemChanged(item); });
@@ -351,12 +553,24 @@ MainWindow::MainWindow()
     connect(presetTable_->verticalScrollBar(), &QScrollBar::valueChanged, this,
             [this](int) { selectionOverlay_->refresh(); });
     connect(presetTable_->horizontalScrollBar(), &QScrollBar::valueChanged, this,
-            [this](int) { selectionOverlay_->refresh(); });
+            [this](int) {
+                selectionOverlay_->refresh();
+                cpuUsageRow_->refresh();
+            });
+    connect(hierarchyHeader_, &QHeaderView::sectionResized, this,
+            [this](int, int, int) { cpuUsageRow_->refresh(); });
+    connect(hierarchyHeader_, &QHeaderView::geometriesChanged, this,
+            [this] { cpuUsageRow_->refresh(); });
     connect(moveUpButton_, &QToolButton::clicked, this, [this] { moveSelectedPreset(-1); });
     connect(moveDownButton_, &QToolButton::clicked, this, [this] { moveSelectedPreset(1); });
+    connect(resetAllAssignmentsButton_, &QPushButton::clicked, this,
+            [this] { resetAllProcessOrderAssignments(); });
 
     periodicApplyTimer_ = new QTimer(this);
     connect(periodicApplyTimer_, &QTimer::timeout, this, [this] { applyPeriodicPresets(); });
+    performanceClock_.start();
+    performanceTimer_ = new QTimer(this);
+    connect(performanceTimer_, &QTimer::timeout, this, [this] { updatePerformanceMetrics(); });
 
     loadSettings();
     rebuildCpuStructureSelector();
@@ -528,12 +742,26 @@ void MainWindow::applyUiSettings()
         QFont tableFont = qApp->font();
         tableFont.setPointSize(uiSettings_.tableFontPointSize);
         presetTable_->setFont(tableFont);
-        presetTable_->verticalHeader()->setDefaultSectionSize(
-            qMax(34, QFontMetrics(tableFont).height() + 10));
+        presetTable_->verticalHeader()->setDefaultSectionSize(uiSettings_.tableRowHeight);
         if (hierarchyHeader_ != nullptr) {
             hierarchyHeader_->setFont(tableFont);
             hierarchyHeader_->setRowHeight(qMax(26, QFontMetrics(tableFont).height() + 8));
         }
+        if (cpuUsageRow_ != nullptr) {
+            cpuUsageRow_->setFont(tableFont);
+        }
+    }
+    if (selectionOverlay_ != nullptr) {
+        selectionOverlay_->setSeparatorStyle(uiSettings_.separatorLineThickness,
+                                             uiSettings_.separatorLineTransparencyPercent);
+    }
+    if (cpuUsageRow_ != nullptr) {
+        cpuUsageRow_->setFixedHeight(uiSettings_.cpuUsageRowHeight);
+        cpuUsageRow_->setBarWidth(uiSettings_.cpuUsageBarWidth);
+        cpuUsageRow_->setBarAppearance(uiSettings_.cpuUsageBarColor,
+                                       uiSettings_.cpuUsageBarTransparencyPercent);
+        cpuUsageRow_->setVisible(uiSettings_.showCpuUsageRow);
+        cpuUsageRow_->refresh();
     }
 }
 
@@ -563,7 +791,11 @@ void MainWindow::retranslateUi()
             text(QStringLiteral("定期"), QStringLiteral("Periodic")),
             text(QStringLiteral("リセット"), QStringLiteral("Reset")),
             text(QStringLiteral("順番"), QStringLiteral("Order")),
-            text(QStringLiteral("優先度"), QStringLiteral("Priority")));
+            text(QStringLiteral("優先度"), QStringLiteral("Priority")),
+            QStringLiteral("PID"),
+            text(QStringLiteral("開始"), QStringLiteral("Start")),
+            QStringLiteral("CPU"),
+            text(QStringLiteral("メモリ"), QStringLiteral("Memory")));
     }
     if (presetTable_ != nullptr && presetTable_->columnCount() >= kFirstCpuColumn) {
         presetTable_->horizontalHeaderItem(kEnabledColumn)->setText(
@@ -579,12 +811,29 @@ void MainWindow::retranslateUi()
             text(QStringLiteral("順番"), QStringLiteral("Order")));
         presetTable_->horizontalHeaderItem(kProcessPriorityColumn)->setText(
             text(QStringLiteral("優先度"), QStringLiteral("Priority")));
+        presetTable_->horizontalHeaderItem(kPidColumn)->setText(QStringLiteral("PID"));
+        presetTable_->horizontalHeaderItem(kProcessStartColumn)->setText(
+            text(QStringLiteral("開始"), QStringLiteral("Start")));
+        presetTable_->horizontalHeaderItem(kProcessCpuColumn)->setText(QStringLiteral("CPU"));
+        presetTable_->horizontalHeaderItem(kProcessMemoryColumn)->setText(
+            text(QStringLiteral("メモリ"), QStringLiteral("Memory")));
+    }
+    if (cpuUsageRow_ != nullptr) {
+        cpuUsageRow_->setLabel(text(QStringLiteral("CPU使用率"), QStringLiteral("CPU Usage")));
     }
     if (moveUpButton_ != nullptr) {
         moveUpButton_->setToolTip(text(QStringLiteral("選択したプリセットを上へ移動"),
                                        QStringLiteral("Move selected preset up")));
         moveDownButton_->setToolTip(text(QStringLiteral("選択したプリセットを下へ移動"),
                                          QStringLiteral("Move selected preset down")));
+    }
+    if (resetAllAssignmentsButton_ != nullptr) {
+        resetAllAssignmentsButton_->setText(
+            text(QStringLiteral("全ての適用状態をリセット"),
+                 QStringLiteral("Reset All Applied States")));
+        resetAllAssignmentsButton_->setToolTip(text(
+            QStringLiteral("順番のPID割り当てと、実際の担当状態を全てクリア"),
+            QStringLiteral("Clear all order-to-PID mappings and actual ownership")));
     }
 }
 
@@ -617,7 +866,15 @@ void MainWindow::loadSettings()
     }
 
     presets_ = repository_.loadProcessPresets();
+    processOrderAssignments_ = repository_.loadProcessOrderAssignments();
+    processPresetOwnerships_ = repository_.loadProcessPresetOwnerships();
     normalizeGroups();
+    if (pruneProcessOrderAssignments()) {
+        saveProcessOrderAssignments();
+    }
+    if (pruneProcessPresetOwnerships()) {
+        saveProcessPresetOwnerships();
+    }
 }
 
 const CpuStructure &MainWindow::activeCpuStructure() const
@@ -634,6 +891,8 @@ void MainWindow::rebuildPresetTable()
 {
     rebuildingTable_ = true;
     activeLeaves_ = collectCpuLeaves(activeCpuStructure().roots);
+    const bool assignmentsChanged = pruneProcessOrderAssignments();
+    const bool ownershipsChanged = pruneProcessPresetOwnerships();
 
     presetTable_->clearSpans();
     presetTable_->clearContents();
@@ -655,12 +914,23 @@ void MainWindow::rebuildPresetTable()
     presetTable_->setHorizontalHeaderItem(
         kProcessPriorityColumn,
         new QTableWidgetItem(text(QStringLiteral("優先度"), QStringLiteral("Priority"))));
+    presetTable_->setHorizontalHeaderItem(
+        kPidColumn, new QTableWidgetItem(QStringLiteral("PID")));
+    presetTable_->setHorizontalHeaderItem(
+        kProcessStartColumn,
+        new QTableWidgetItem(text(QStringLiteral("開始"), QStringLiteral("Start"))));
+    presetTable_->setHorizontalHeaderItem(
+        kProcessCpuColumn, new QTableWidgetItem(QStringLiteral("CPU")));
+    presetTable_->setHorizontalHeaderItem(
+        kProcessMemoryColumn,
+        new QTableWidgetItem(text(QStringLiteral("メモリ"), QStringLiteral("Memory"))));
     for (int column = 0; column < activeLeaves_.size(); ++column) {
         presetTable_->setHorizontalHeaderItem(
             kFirstCpuColumn + column, new QTableWidgetItem(activeLeaves_.at(column).label));
     }
 
     hierarchyHeader_->setHierarchy(activeCpuStructure().roots);
+    cpuUsageRow_->setCpuLeaves(activeLeaves_);
     presetTable_->setColumnWidth(kEnabledColumn, uiSettings_.enabledColumnWidth);
     presetTable_->setColumnWidth(kExecutableColumn, uiSettings_.executableColumnWidth);
     presetTable_->setColumnWidth(kApplyOnceColumn, uiSettings_.applyOnceColumnWidth);
@@ -668,6 +938,13 @@ void MainWindow::rebuildPresetTable()
     presetTable_->setColumnWidth(kResetColumn, uiSettings_.resetColumnWidth);
     presetTable_->setColumnWidth(kOrderColumn, uiSettings_.orderColumnWidth);
     presetTable_->setColumnWidth(kProcessPriorityColumn, uiSettings_.processPriorityColumnWidth);
+    presetTable_->setColumnWidth(kPidColumn, uiSettings_.pidColumnWidth);
+    presetTable_->setColumnWidth(kProcessStartColumn, uiSettings_.processStartColumnWidth);
+    presetTable_->setColumnWidth(kProcessCpuColumn, uiSettings_.processCpuColumnWidth);
+    presetTable_->setColumnWidth(kProcessMemoryColumn, uiSettings_.processMemoryColumnWidth);
+    presetTable_->setColumnHidden(kProcessStartColumn, !uiSettings_.showProcessStartColumn);
+    presetTable_->setColumnHidden(kProcessCpuColumn, !uiSettings_.showProcessCpuColumn);
+    presetTable_->setColumnHidden(kProcessMemoryColumn, !uiSettings_.showProcessMemoryColumn);
     for (int column = 0; column < activeLeaves_.size(); ++column) {
         presetTable_->setColumnWidth(kFirstCpuColumn + column, uiSettings_.cpuColumnWidth);
     }
@@ -680,14 +957,7 @@ void MainWindow::rebuildPresetTable()
     bool normalizedOrders = false;
     for (int row = 0; row < presets_.size(); ++row) {
         ProcessPreset &preset = presets_[row];
-        const QString key = executableKey(preset.executableName);
-        int matchingPresetCount = 0;
-        for (const ProcessPreset &candidate : presets_) {
-            if (executableKey(candidate.executableName) == key) {
-                ++matchingPresetCount;
-            }
-        }
-        matchingPresetCount = qMax(1, matchingPresetCount);
+        const int matchingPresetCount = matchingPresetCountForExecutable(preset.executableName);
         if (!preset.applyToAll && preset.order > matchingPresetCount) {
             preset.order = 1;
             normalizedOrders = true;
@@ -751,8 +1021,9 @@ void MainWindow::rebuildPresetTable()
         orderCombo->addItem(text(QStringLiteral("全て"), QStringLiteral("All")), -1);
         orderCombo->setCurrentIndex(orderCombo->findData(
             preset.applyToAll ? -1 : preset.order));
-        orderCombo->setToolTip(text(QStringLiteral("PID昇順で適用対象を選択"),
-                                       QStringLiteral("Choose the target in ascending PID order.")));
+        orderCombo->setToolTip(text(
+            QStringLiteral("保持されている順番番号で適用対象を選択"),
+            QStringLiteral("Choose the target using its retained order number.")));
         connect(orderCombo, qOverload<int>(&QComboBox::currentIndexChanged), this,
                 [this, presetId = preset.id, orderCombo](int) {
                     const int index = presetIndexById(presetId);
@@ -773,12 +1044,12 @@ void MainWindow::rebuildPresetTable()
         installCellContextMenu(orderCombo);
 
         auto *processPriorityCombo = new QComboBox(presetTable_);
-        for (const ProcessPriorityClass priority : {ProcessPriorityClass::Idle,
-                                                    ProcessPriorityClass::BelowNormal,
-                                                    ProcessPriorityClass::Normal,
-                                                    ProcessPriorityClass::AboveNormal,
+        for (const ProcessPriorityClass priority : {ProcessPriorityClass::Realtime,
                                                     ProcessPriorityClass::High,
-                                                    ProcessPriorityClass::Realtime}) {
+                                                    ProcessPriorityClass::AboveNormal,
+                                                    ProcessPriorityClass::Normal,
+                                                    ProcessPriorityClass::BelowNormal,
+                                                    ProcessPriorityClass::Idle}) {
             processPriorityCombo->addItem(processPriorityText(uiSettings_, priority),
                                           static_cast<int>(priority));
         }
@@ -799,6 +1070,37 @@ void MainWindow::rebuildPresetTable()
                 });
         presetTable_->setCellWidget(row, kProcessPriorityColumn, processPriorityCombo);
         installCellContextMenu(processPriorityCombo);
+
+        const QVector<quint32> ownedProcessIds = processIdsOwnedByPreset(preset.id);
+        QStringList ownedProcessIdTexts;
+        for (const quint32 processId : ownedProcessIds) {
+            ownedProcessIdTexts.append(QString::number(processId));
+        }
+        const QString ownedProcessIdText = ownedProcessIdTexts.isEmpty()
+            ? QStringLiteral("—")
+            : ownedProcessIdTexts.join(QStringLiteral(", "));
+        auto *pidItem = new QTableWidgetItem(ownedProcessIdText);
+        pidItem->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+        pidItem->setTextAlignment(Qt::AlignCenter);
+        if (ownedProcessIds.isEmpty()) {
+            pidItem->setToolTip(text(
+                QStringLiteral("この行が実際に担当中のPIDはありません。"),
+                QStringLiteral("This row does not currently own any PID.")));
+        } else {
+            pidItem->setToolTip(text(
+                QStringLiteral("この行が最後に適用成功し、現在担当中のPID: %1"),
+                QStringLiteral("PIDs last successfully applied by this row: %1"))
+                                    .arg(ownedProcessIdTexts.join(QStringLiteral(", "))));
+        }
+        presetTable_->setItem(row, kPidColumn, pidItem);
+
+        for (const int informationColumn : {
+                 kProcessStartColumn, kProcessCpuColumn, kProcessMemoryColumn}) {
+            auto *informationItem = new QTableWidgetItem;
+            informationItem->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+            informationItem->setTextAlignment(Qt::AlignCenter);
+            presetTable_->setItem(row, informationColumn, informationItem);
+        }
 
         auto *exeItem = new QTableWidgetItem(preset.executableName);
         exeItem->setToolTip(QStringLiteral("対象.exe名（例: renderer.exe）"));
@@ -823,17 +1125,470 @@ void MainWindow::rebuildPresetTable()
 
     rebuildingTable_ = false;
     applyGroupSpans();
+    QSet<int> separatorRows;
+    for (int row = 0; row + 1 < presets_.size(); ++row) {
+        const QString currentGroupId = presets_.at(row).groupId;
+        const QString nextGroupId = presets_.at(row + 1).groupId;
+        const bool insideSameGroup = !currentGroupId.isEmpty()
+            && currentGroupId == nextGroupId;
+        if (!insideSameGroup) {
+            separatorRows.insert(row);
+        }
+    }
+    selectionOverlay_->setSeparatorRows(separatorRows);
     if (normalizedOrders) {
         savePresets();
     }
+    if (assignmentsChanged) {
+        saveProcessOrderAssignments();
+    }
+    if (ownershipsChanged) {
+        saveProcessPresetOwnerships();
+    }
+    resetAllAssignmentsButton_->setEnabled(
+        !processOrderAssignments_.isEmpty() || !processPresetOwnerships_.isEmpty());
+    updateAssignedPidCells();
     updatePeriodicTimer();
+    updatePerformanceTimer();
+    updatePerformanceMetrics();
     updateMoveButtons();
     selectionOverlay_->refresh();
+    cpuUsageRow_->refresh();
 }
 
 void MainWindow::savePresets()
 {
     repository_.saveProcessPresets(presets_);
+}
+
+void MainWindow::saveProcessOrderAssignments()
+{
+    repository_.saveProcessOrderAssignments(processOrderAssignments_);
+}
+
+void MainWindow::saveProcessPresetOwnerships()
+{
+    repository_.saveProcessPresetOwnerships(processPresetOwnerships_);
+}
+
+int MainWindow::matchingPresetCountForExecutable(const QString &executableName) const
+{
+    const QString key = executableKey(executableName);
+    const int count = static_cast<int>(std::count_if(
+        presets_.cbegin(), presets_.cend(), [&key](const ProcessPreset &preset) {
+            return executableKey(preset.executableName) == key;
+        }));
+    return qMax(1, count);
+}
+
+quint32 MainWindow::assignedProcessId(const QString &executableName, int order) const
+{
+    const QString key = executableKey(executableName);
+    const auto assignment = std::find_if(
+        processOrderAssignments_.cbegin(), processOrderAssignments_.cend(),
+        [&key, order](const ProcessOrderAssignment &candidate) {
+            return candidate.order == order
+                && executableKey(candidate.executableName) == key;
+        });
+    return assignment == processOrderAssignments_.cend() ? 0 : assignment->processId;
+}
+
+QVector<quint32> MainWindow::processIdsOwnedByPreset(const QString &presetId) const
+{
+    QSet<quint32> processIds;
+    for (const ProcessPresetOwnership &ownership : processPresetOwnerships_) {
+        if (ownership.presetId == presetId && ownership.processId != 0) {
+            processIds.insert(ownership.processId);
+        }
+    }
+
+    QVector<quint32> result;
+    result.reserve(processIds.size());
+    for (const quint32 processId : processIds) {
+        result.append(processId);
+    }
+    std::sort(result.begin(), result.end());
+    return result;
+}
+
+bool MainWindow::recordProcessPresetOwnership(const QString &executableName,
+                                              quint32 processId,
+                                              const QString &presetId)
+{
+    const QString key = executableKey(executableName);
+    if (key.isEmpty() || processId == 0 || presetId.isEmpty()) {
+        return false;
+    }
+
+    int matchingOwnerships = 0;
+    bool alreadyOwnedByPreset = false;
+    for (const ProcessPresetOwnership &ownership : processPresetOwnerships_) {
+        if (ownership.processId == processId
+            && executableKey(ownership.executableName) == key) {
+            ++matchingOwnerships;
+            alreadyOwnedByPreset = ownership.presetId == presetId;
+        }
+    }
+    if (matchingOwnerships == 1 && alreadyOwnedByPreset) {
+        return false;
+    }
+
+    for (int index = processPresetOwnerships_.size() - 1; index >= 0; --index) {
+        const ProcessPresetOwnership &ownership = processPresetOwnerships_.at(index);
+        if (ownership.processId == processId
+            && executableKey(ownership.executableName) == key) {
+            processPresetOwnerships_.removeAt(index);
+        }
+    }
+
+    ProcessPresetOwnership ownership;
+    ownership.executableName = QFileInfo(executableName).fileName();
+    ownership.processId = processId;
+    ownership.presetId = presetId;
+    processPresetOwnerships_.append(ownership);
+    return true;
+}
+
+bool MainWindow::clearProcessPresetOwnership(const QString &executableName, quint32 processId)
+{
+    const QString key = executableKey(executableName);
+    bool changed = false;
+    for (int index = processPresetOwnerships_.size() - 1; index >= 0; --index) {
+        const ProcessPresetOwnership &ownership = processPresetOwnerships_.at(index);
+        if (ownership.processId == processId
+            && executableKey(ownership.executableName) == key) {
+            processPresetOwnerships_.removeAt(index);
+            changed = true;
+        }
+    }
+    return changed;
+}
+
+bool MainWindow::reconcileProcessOrderAssignments(
+    const QString &executableName,
+    const QVector<ProcessInfo> &processes,
+    int maximumOrder,
+    int orderToAssign)
+{
+    const QString key = executableKey(executableName);
+    if (key.isEmpty()) {
+        return false;
+    }
+
+    QVector<ProcessInfo> sortedProcesses = processes;
+    std::sort(sortedProcesses.begin(), sortedProcesses.end(),
+              [](const ProcessInfo &left, const ProcessInfo &right) {
+                  return left.processId < right.processId;
+              });
+
+    QSet<quint32> liveProcessIds;
+    for (const ProcessInfo &process : sortedProcesses) {
+        if (process.processId != 0) {
+            liveProcessIds.insert(process.processId);
+        }
+    }
+
+    QSet<int> usedOrders;
+    QSet<quint32> usedProcessIds;
+    QVector<ProcessOrderAssignment> reconciled;
+    reconciled.reserve(processOrderAssignments_.size() + 1);
+    bool changed = false;
+
+    for (const ProcessOrderAssignment &assignment : processOrderAssignments_) {
+        if (executableKey(assignment.executableName) != key) {
+            reconciled.append(assignment);
+            continue;
+        }
+
+        const bool valid = assignment.order >= 1
+            && assignment.order <= maximumOrder
+            && liveProcessIds.contains(assignment.processId)
+            && !usedOrders.contains(assignment.order)
+            && !usedProcessIds.contains(assignment.processId);
+        if (!valid) {
+            changed = true;
+            continue;
+        }
+        usedOrders.insert(assignment.order);
+        usedProcessIds.insert(assignment.processId);
+        reconciled.append(assignment);
+    }
+
+    processOrderAssignments_ = reconciled;
+
+    if (orderToAssign >= 1 && orderToAssign <= maximumOrder
+        && !usedOrders.contains(orderToAssign)) {
+        QVector<int> unassignedOrders;
+        for (int order = 1; order <= maximumOrder; ++order) {
+            if (!usedOrders.contains(order)) {
+                unassignedOrders.append(order);
+            }
+        }
+
+        QVector<ProcessInfo> unassignedProcesses;
+        for (const ProcessInfo &process : sortedProcesses) {
+            if (process.processId != 0 && !usedProcessIds.contains(process.processId)) {
+                unassignedProcesses.append(process);
+            }
+        }
+
+        const int assignmentIndex = unassignedOrders.indexOf(orderToAssign);
+        if (assignmentIndex >= 0 && assignmentIndex < unassignedProcesses.size()) {
+            ProcessOrderAssignment assignment;
+            assignment.executableName = QFileInfo(executableName).fileName();
+            assignment.order = orderToAssign;
+            assignment.processId = unassignedProcesses.at(assignmentIndex).processId;
+            processOrderAssignments_.append(assignment);
+            changed = true;
+        }
+    }
+
+    return changed;
+}
+
+bool MainWindow::pruneProcessOrderAssignments()
+{
+    QMap<QString, QString> executableNames;
+    QMap<QString, int> maximumOrders;
+    for (const ProcessPreset &preset : presets_) {
+        const QString key = executableKey(preset.executableName);
+        if (key.isEmpty()) {
+            continue;
+        }
+        if (!executableNames.contains(key)) {
+            executableNames.insert(key, QFileInfo(preset.executableName).fileName());
+        }
+        ++maximumOrders[key];
+    }
+
+    bool changed = false;
+    QVector<ProcessOrderAssignment> retained;
+    retained.reserve(processOrderAssignments_.size());
+    for (const ProcessOrderAssignment &assignment : processOrderAssignments_) {
+        if (executableNames.contains(executableKey(assignment.executableName))) {
+            retained.append(assignment);
+        } else {
+            changed = true;
+        }
+    }
+    processOrderAssignments_ = retained;
+
+    for (auto iterator = executableNames.cbegin(); iterator != executableNames.cend(); ++iterator) {
+        const QVector<ProcessInfo> processes = findProcessesByExecutable(iterator.value());
+        changed = reconcileProcessOrderAssignments(
+                      iterator.value(), processes, maximumOrders.value(iterator.key()), 0)
+            || changed;
+    }
+    return changed;
+}
+
+bool MainWindow::pruneProcessPresetOwnerships()
+{
+    QSet<QString> presetIds;
+    for (const ProcessPreset &preset : presets_) {
+        if (!preset.id.isEmpty()) {
+            presetIds.insert(preset.id);
+        }
+    }
+
+    QMap<QString, QString> executableNames;
+    for (const ProcessPresetOwnership &ownership : processPresetOwnerships_) {
+        const QString key = executableKey(ownership.executableName);
+        if (!key.isEmpty() && !executableNames.contains(key)) {
+            executableNames.insert(key, QFileInfo(ownership.executableName).fileName());
+        }
+    }
+
+    QMap<QString, QSet<quint32>> liveProcessIds;
+    for (auto iterator = executableNames.cbegin(); iterator != executableNames.cend(); ++iterator) {
+        QSet<quint32> processIds;
+        for (const ProcessInfo &process : findProcessesByExecutable(iterator.value())) {
+            if (process.processId != 0) {
+                processIds.insert(process.processId);
+            }
+        }
+        liveProcessIds.insert(iterator.key(), processIds);
+    }
+
+    QSet<QString> retainedTargets;
+    QVector<ProcessPresetOwnership> retained;
+    retained.reserve(processPresetOwnerships_.size());
+    bool changed = false;
+    for (auto iterator = processPresetOwnerships_.crbegin();
+         iterator != processPresetOwnerships_.crend(); ++iterator) {
+        const QString key = executableKey(iterator->executableName);
+        const QString targetKey = key + QChar(0x1f) + QString::number(iterator->processId);
+        const bool valid = presetIds.contains(iterator->presetId)
+            && liveProcessIds.value(key).contains(iterator->processId)
+            && !retainedTargets.contains(targetKey);
+        if (!valid) {
+            changed = true;
+            continue;
+        }
+        retainedTargets.insert(targetKey);
+        retained.append(*iterator);
+    }
+    std::reverse(retained.begin(), retained.end());
+    processPresetOwnerships_ = retained;
+    return changed;
+}
+
+void MainWindow::updateAssignedPidCells()
+{
+    if (presetTable_ == nullptr || presetTable_->columnCount() <= kProcessMemoryColumn) {
+        return;
+    }
+
+    const QSignalBlocker blocker(presetTable_);
+    const auto informationItem = [this](int row, int column) {
+        QTableWidgetItem *item = presetTable_->item(row, column);
+        if (item == nullptr) {
+            item = new QTableWidgetItem;
+            item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+            item->setTextAlignment(Qt::AlignCenter);
+            presetTable_->setItem(row, column, item);
+        }
+        return item;
+    };
+
+    for (int row = 0; row < presets_.size() && row < presetTable_->rowCount(); ++row) {
+        const ProcessPreset &preset = presets_.at(row);
+        const QVector<quint32> ownedProcessIds = processIdsOwnedByPreset(preset.id);
+        QStringList ownedProcessIdTexts;
+        for (const quint32 processId : ownedProcessIds) {
+            ownedProcessIdTexts.append(QString::number(processId));
+        }
+        QTableWidgetItem *item = presetTable_->item(row, kPidColumn);
+        if (item == nullptr) {
+            item = new QTableWidgetItem;
+            presetTable_->setItem(row, kPidColumn, item);
+        }
+        item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+        item->setTextAlignment(Qt::AlignCenter);
+        item->setText(ownedProcessIdTexts.isEmpty()
+                          ? QStringLiteral("—")
+                          : ownedProcessIdTexts.join(QStringLiteral(", ")));
+        if (ownedProcessIds.isEmpty()) {
+            item->setToolTip(text(
+                QStringLiteral("この行が実際に担当中のPIDはありません。"),
+                QStringLiteral("This row does not currently own any PID.")));
+        } else {
+            item->setToolTip(text(
+                QStringLiteral("この行が最後に適用成功し、現在担当中のPID: %1"),
+                QStringLiteral("PIDs last successfully applied by this row: %1"))
+                                     .arg(ownedProcessIdTexts.join(QStringLiteral(", "))));
+        }
+
+        QTableWidgetItem *startItem = informationItem(row, kProcessStartColumn);
+        QTableWidgetItem *cpuItem = informationItem(row, kProcessCpuColumn);
+        QTableWidgetItem *memoryItem = informationItem(row, kProcessMemoryColumn);
+        if (ownedProcessIds.size() != 1) {
+            for (QTableWidgetItem *information : {startItem, cpuItem, memoryItem}) {
+                information->setText(QString());
+                information->setToolTip(QString());
+                information->setData(Qt::UserRole, QVariant());
+            }
+            continue;
+        }
+
+        const quint32 processId = ownedProcessIds.first();
+        const ProcessPerformanceSnapshot snapshot = queryProcessPerformance(processId);
+        startItem->setData(Qt::UserRole, processId);
+        startItem->setText(snapshot.timingAvailable
+                               ? processStartTimeText(snapshot.startTime, uiSettings_)
+                               : QStringLiteral("—"));
+        startItem->setToolTip(text(
+            QStringLiteral("PID %1 のプロセス開始時間").arg(processId),
+            QStringLiteral("Process start time for PID %1").arg(processId)));
+
+        for (QTableWidgetItem *performanceItem : {cpuItem, memoryItem}) {
+            if (performanceItem->data(Qt::UserRole).toUInt() != processId) {
+                performanceItem->setText(QString());
+                performanceItem->setToolTip(QString());
+            }
+            performanceItem->setData(Qt::UserRole, processId);
+        }
+    }
+    if (resetAllAssignmentsButton_ != nullptr) {
+        resetAllAssignmentsButton_->setEnabled(
+            !processOrderAssignments_.isEmpty() || !processPresetOwnerships_.isEmpty());
+    }
+}
+
+void MainWindow::resetAllProcessOrderAssignments()
+{
+    if (processOrderAssignments_.isEmpty() && processPresetOwnerships_.isEmpty()) {
+        return;
+    }
+    processOrderAssignments_.clear();
+    processPresetOwnerships_.clear();
+    saveProcessOrderAssignments();
+    saveProcessPresetOwnerships();
+    updateAssignedPidCells();
+    statusBar()->showMessage(
+        text(QStringLiteral("全ての担当PIDをクリアしました。"),
+             QStringLiteral("All assigned PIDs were cleared.")),
+        4000);
+}
+
+QVector<ProcessInfo> MainWindow::targetProcessesForPreset(
+    const ProcessPreset &preset,
+    const QString &executableName,
+    QString *errorMessage)
+{
+    if (errorMessage != nullptr) {
+        errorMessage->clear();
+    }
+    const auto setError = [errorMessage](const QString &message) {
+        if (errorMessage != nullptr) {
+            *errorMessage = message;
+        }
+    };
+
+    if (pruneProcessPresetOwnerships()) {
+        saveProcessPresetOwnerships();
+        updateAssignedPidCells();
+    }
+
+    QVector<ProcessInfo> processes = findProcessesByExecutable(executableName);
+    std::sort(processes.begin(), processes.end(),
+              [](const ProcessInfo &left, const ProcessInfo &right) {
+                  return left.processId < right.processId;
+              });
+
+    const int maximumOrder = matchingPresetCountForExecutable(executableName);
+    const int orderToAssign = preset.applyToAll ? 0 : preset.order;
+    const bool assignmentsChanged = reconcileProcessOrderAssignments(
+        executableName, processes, maximumOrder, orderToAssign);
+    if (assignmentsChanged) {
+        saveProcessOrderAssignments();
+        updateAssignedPidCells();
+    }
+
+    if (processes.isEmpty()) {
+        setError(text(QStringLiteral("%1 の実行中プロセスが見つかりません。"),
+                      QStringLiteral("No running process was found for %1."))
+                     .arg(executableName));
+        return {};
+    }
+    if (preset.applyToAll) {
+        return processes;
+    }
+
+    const quint32 processId = assignedProcessId(executableName, preset.order);
+    const auto process = std::find_if(
+        processes.cbegin(), processes.cend(), [processId](const ProcessInfo &candidate) {
+            return candidate.processId == processId;
+        });
+    if (processId == 0 || process == processes.cend()) {
+        setError(text(
+            QStringLiteral("%1 の順番 %2 に担当PIDを割り当てられないため、適用しませんでした。"),
+            QStringLiteral("Order %2 for %1 has no PID available, so it was not applied."))
+                         .arg(executableName)
+                         .arg(preset.order));
+        return {};
+    }
+    return {*process};
 }
 
 void MainWindow::createPreset()
@@ -1075,18 +1830,28 @@ void MainWindow::editCpuStructures()
 
 void MainWindow::openSettings()
 {
-    SettingsDialog dialog(uiSettings_, [this] { resetCustomCpuStructures(); }, this);
+    const auto applySettings = [this](const UiSettings &settings) {
+        uiSettings_ = settings;
+        repository_.saveUiSettings(uiSettings_);
+        applyUiSettings();
+        retranslateUi();
+        rebuildPresetTable();
+        statusBar()->showMessage(
+            text(QStringLiteral("設定を適用しました。"),
+                 QStringLiteral("Settings applied.")),
+            4000);
+    };
+    SettingsDialog dialog(uiSettings_,
+                          [this] { resetCustomCpuStructures(); },
+                          applySettings,
+                          this);
     const int dialogResult = dialog.exec();
     uiSettings_.settingsDialogSize = dialog.size();
     repository_.saveUiSettings(uiSettings_);
     if (dialogResult != QDialog::Accepted) {
         return;
     }
-    uiSettings_ = dialog.settings();
-    repository_.saveUiSettings(uiSettings_);
-    applyUiSettings();
-    retranslateUi();
-    rebuildPresetTable();
+    applySettings(dialog.settings());
     statusBar()->showMessage(
         text(QStringLiteral("設定を保存しました。"), QStringLiteral("Settings saved.")), 4000);
 }
@@ -1358,6 +2123,171 @@ void MainWindow::applyPeriodicPresets()
     }
 }
 
+void MainWindow::updatePerformanceTimer()
+{
+    if (performanceTimer_ == nullptr) {
+        return;
+    }
+    const bool needsUpdates = uiSettings_.showProcessCpuColumn
+        || uiSettings_.showProcessMemoryColumn
+        || uiSettings_.showCpuUsageRow;
+    if (!needsUpdates) {
+        performanceTimer_->stop();
+    } else {
+        performanceTimer_->start(uiSettings_.performanceUpdateIntervalSeconds * 1000);
+    }
+
+    if (!uiSettings_.showProcessCpuColumn) {
+        processCpuSamples_.clear();
+    }
+    if (!uiSettings_.showCpuUsageRow) {
+        processorCpuSamples_.clear();
+        processorUsagePercentages_.clear();
+        if (cpuUsageRow_ != nullptr) {
+            cpuUsageRow_->setUsagePercentages({});
+        }
+    }
+}
+
+void MainWindow::updatePerformanceMetrics()
+{
+    if (presetTable_ == nullptr) {
+        return;
+    }
+
+    QSet<quint32> singleOwnedProcessIds;
+    for (const ProcessPreset &preset : presets_) {
+        const QVector<quint32> ownedProcessIds = processIdsOwnedByPreset(preset.id);
+        if (ownedProcessIds.size() == 1) {
+            singleOwnedProcessIds.insert(ownedProcessIds.first());
+        }
+    }
+
+    QHash<quint32, ProcessPerformanceSnapshot> processSnapshots;
+    if (uiSettings_.showProcessCpuColumn || uiSettings_.showProcessMemoryColumn) {
+        for (const quint32 processId : singleOwnedProcessIds) {
+            processSnapshots.insert(processId, queryProcessPerformance(processId));
+        }
+    }
+
+    QHash<quint32, double> processCpuPercentages;
+    const qint64 timestampMilliseconds = performanceClock_.elapsed();
+    const int processorCount = activeLogicalProcessorCount();
+    if (uiSettings_.showProcessCpuColumn) {
+        for (auto iterator = processSnapshots.cbegin(); iterator != processSnapshots.cend(); ++iterator) {
+            const quint32 processId = iterator.key();
+            const ProcessPerformanceSnapshot &snapshot = iterator.value();
+            if (!snapshot.timingAvailable) {
+                processCpuSamples_.remove(processId);
+                continue;
+            }
+
+            const auto previous = processCpuSamples_.constFind(processId);
+            if (previous != processCpuSamples_.cend()
+                && timestampMilliseconds > previous->timestampMilliseconds
+                && snapshot.processorTime100Nanoseconds
+                       >= previous->processorTime100Nanoseconds) {
+                const quint64 processorDelta = snapshot.processorTime100Nanoseconds
+                    - previous->processorTime100Nanoseconds;
+                const double availableTime =
+                    static_cast<double>(timestampMilliseconds - previous->timestampMilliseconds)
+                    * 10000.0 * processorCount;
+                if (availableTime > 0.0) {
+                    processCpuPercentages.insert(
+                        processId,
+                        qBound(0.0, processorDelta * 100.0 / availableTime, 100.0));
+                }
+            }
+            processCpuSamples_.insert(
+                processId,
+                {snapshot.processorTime100Nanoseconds, timestampMilliseconds});
+        }
+    }
+
+    for (auto iterator = processCpuSamples_.begin(); iterator != processCpuSamples_.end();) {
+        if (!singleOwnedProcessIds.contains(iterator.key())) {
+            iterator = processCpuSamples_.erase(iterator);
+        } else {
+            ++iterator;
+        }
+    }
+
+    {
+        const QSignalBlocker blocker(presetTable_);
+        for (int row = 0; row < presets_.size() && row < presetTable_->rowCount(); ++row) {
+            const QVector<quint32> ownedProcessIds = processIdsOwnedByPreset(presets_.at(row).id);
+            QTableWidgetItem *cpuItem = presetTable_->item(row, kProcessCpuColumn);
+            QTableWidgetItem *memoryItem = presetTable_->item(row, kProcessMemoryColumn);
+            if (cpuItem == nullptr || memoryItem == nullptr) {
+                continue;
+            }
+            if (ownedProcessIds.size() != 1) {
+                cpuItem->setText(QString());
+                memoryItem->setText(QString());
+                continue;
+            }
+
+            const quint32 processId = ownedProcessIds.first();
+            const ProcessPerformanceSnapshot snapshot = processSnapshots.value(processId);
+            if (uiSettings_.showProcessCpuColumn) {
+                cpuItem->setText(processCpuPercentages.contains(processId)
+                                     ? QStringLiteral("%1 %")
+                                           .arg(processCpuPercentages.value(processId), 0, 'f', 1)
+                                     : QStringLiteral("—"));
+                cpuItem->setToolTip(text(
+                    QStringLiteral("PID %1 のCPU使用率").arg(processId),
+                    QStringLiteral("CPU usage for PID %1").arg(processId)));
+            }
+            if (uiSettings_.showProcessMemoryColumn) {
+                memoryItem->setText(snapshot.memoryAvailable
+                                        ? memoryUsageText(snapshot.workingSetBytes)
+                                        : QStringLiteral("—"));
+                memoryItem->setToolTip(text(
+                    QStringLiteral("PID %1 のワーキングセット").arg(processId),
+                    QStringLiteral("Working set for PID %1").arg(processId)));
+            }
+        }
+    }
+
+    if (uiSettings_.showCpuUsageRow && cpuUsageRow_ != nullptr) {
+        const QVector<ProcessorPerformanceSnapshot> processorSnapshots =
+            queryProcessorPerformance();
+        QSet<QString> currentProcessorKeys;
+        for (const ProcessorPerformanceSnapshot &snapshot : processorSnapshots) {
+            const QString key = cpuKey(snapshot.processorGroup, snapshot.logicalProcessor);
+            currentProcessorKeys.insert(key);
+            const auto previous = processorCpuSamples_.constFind(key);
+            if (previous != processorCpuSamples_.cend()
+                && snapshot.totalTime100Nanoseconds > previous->totalTime100Nanoseconds
+                && snapshot.idleTime100Nanoseconds >= previous->idleTime100Nanoseconds) {
+                const quint64 totalDelta = snapshot.totalTime100Nanoseconds
+                    - previous->totalTime100Nanoseconds;
+                const quint64 idleDelta = snapshot.idleTime100Nanoseconds
+                    - previous->idleTime100Nanoseconds;
+                const quint64 busyDelta = totalDelta > idleDelta ? totalDelta - idleDelta : 0;
+                processorUsagePercentages_.insert(
+                    key,
+                    qBound(0.0, busyDelta * 100.0 / totalDelta, 100.0));
+            } else {
+                processorUsagePercentages_.remove(key);
+            }
+            processorCpuSamples_.insert(
+                key,
+                {snapshot.idleTime100Nanoseconds, snapshot.totalTime100Nanoseconds});
+        }
+
+        for (auto iterator = processorCpuSamples_.begin(); iterator != processorCpuSamples_.end();) {
+            if (!currentProcessorKeys.contains(iterator.key())) {
+                processorUsagePercentages_.remove(iterator.key());
+                iterator = processorCpuSamples_.erase(iterator);
+            } else {
+                ++iterator;
+            }
+        }
+        cpuUsageRow_->setUsagePercentages(processorUsagePercentages_);
+    }
+}
+
 int MainWindow::presetIndexById(const QString &id) const
 {
     for (int index = 0; index < presets_.size(); ++index) {
@@ -1419,9 +2349,23 @@ void MainWindow::applyPreset(const QString &presetId, bool periodic)
     }
 
     QStringList messages;
+    bool ownershipsChanged = false;
     for (const ProcessInfo &process : processes) {
-        messages.append(applyAffinity(process.processId, selectedLeaves).message);
-        messages.append(applyProcessPriority(process.processId, preset.processPriority).message);
+        const AffinityApplyResult affinityResult = applyAffinity(
+            process.processId, selectedLeaves);
+        const AffinityApplyResult priorityResult = applyProcessPriority(
+            process.processId, preset.processPriority);
+        messages.append(affinityResult.message);
+        messages.append(priorityResult.message);
+        if (affinityResult.success) {
+            ownershipsChanged = recordProcessPresetOwnership(
+                                    executableName, process.processId, preset.id)
+                || ownershipsChanged;
+        }
+    }
+    if (ownershipsChanged) {
+        saveProcessPresetOwnerships();
+        updateAssignedPidCells();
     }
     statusBar()->showMessage(messages.join(QStringLiteral("  ")), 8000);
 }
@@ -1439,6 +2383,38 @@ void MainWindow::resetPreset(const QString &presetId)
                                       QStringLiteral("Enter a target .exe name.")), 6000);
         return;
     }
+
+    if (pruneProcessPresetOwnerships()) {
+        saveProcessPresetOwnerships();
+        updateAssignedPidCells();
+    }
+
+    QVector<ProcessPresetOwnership> ownedProcesses;
+    for (const ProcessPresetOwnership &ownership : processPresetOwnerships_) {
+        if (ownership.presetId == preset.id) {
+            ownedProcesses.append(ownership);
+        }
+    }
+    if (!ownedProcesses.isEmpty()) {
+        QStringList messages;
+        bool ownershipsChanged = false;
+        for (const ProcessPresetOwnership &ownership : ownedProcesses) {
+            const AffinityApplyResult resetResult = resetAffinity(ownership.processId);
+            messages.append(resetResult.message);
+            if (resetResult.success) {
+                ownershipsChanged = clearProcessPresetOwnership(
+                                        ownership.executableName, ownership.processId)
+                    || ownershipsChanged;
+            }
+        }
+        if (ownershipsChanged) {
+            saveProcessPresetOwnerships();
+            updateAssignedPidCells();
+        }
+        statusBar()->showMessage(messages.join(QStringLiteral("  ")), 8000);
+        return;
+    }
+
     QString errorMessage;
     const QVector<ProcessInfo> processes = targetProcessesForPreset(
         preset, executableName, &errorMessage);
@@ -1447,8 +2423,19 @@ void MainWindow::resetPreset(const QString &presetId)
         return;
     }
     QStringList messages;
+    bool ownershipsChanged = false;
     for (const ProcessInfo &process : processes) {
-        messages.append(resetAffinity(process.processId).message);
+        const AffinityApplyResult resetResult = resetAffinity(process.processId);
+        messages.append(resetResult.message);
+        if (resetResult.success) {
+            ownershipsChanged = clearProcessPresetOwnership(
+                                    executableName, process.processId)
+                || ownershipsChanged;
+        }
+    }
+    if (ownershipsChanged) {
+        saveProcessPresetOwnerships();
+        updateAssignedPidCells();
     }
     statusBar()->showMessage(messages.join(QStringLiteral("  ")), 8000);
 }
