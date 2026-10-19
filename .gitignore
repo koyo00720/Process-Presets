@@ -1,3 +1,4 @@
 /build/
 /ProcessPresets.conf
 *.user
+/dist/
